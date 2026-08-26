@@ -1,0 +1,33 @@
+# Python bytecode, test, and type-checker caches
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local runtime output
+logs/
+workspace/
+
+# Project-local virtual environment (created by install_library/install.sh)
+.venv/
+
+# Downloaded local executable
+bin/
+
+# Secrets and machine-specific configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# macOS and editor metadata
+.DS_Store
+.idea/
+.vscode/
