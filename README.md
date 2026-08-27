@@ -61,9 +61,18 @@ calls to the server or its tools.
 ## Security at a glance
 
 - **The tunnel is outbound-only** — nothing needs to be exposed to the internet.
-- **File access defaults to `~/Desktop`**, plus a fixed list of protected
-  paths (SSH/AWS/GPG keys, Keychain, browser/app credential stores) that are
-  refused no matter what.
+- **The writable workspace defaults to this repo's own `workspace/` folder**
+  (override with `V2_WORKSPACE`). Reads are *not* confined to it — `read_file`
+  can read anywhere except a fixed list of protected paths (SSH/AWS/GPG keys,
+  Keychain, browser/app credential stores) that are refused no matter what.
+  `bash`/`bash_bg`/`python_exec` add a kernel-level `sandbox-exec` layer on
+  top. It is a **deny-list, not an allow-list**: it starts from
+  `(allow default)`, explicitly denies writes to `~/Desktop`, `~/Documents`,
+  `~/Downloads`, `~/Movies`, `~/Music`, `~/Pictures`, `~/.ssh`, `~/.aws`,
+  `~/.config`, `~/.gnupg`, `~/Library`, `/etc`, `/usr`, `/System` and the
+  like, then re-allows the workspace and `/private/tmp` (last match wins).
+  A path in none of those lists — say a folder you created in your home
+  directory — remains writable.
 - **File deletion is disabled everywhere** — enforced in code, not left to
   the model's judgment.
 - **Modifying an existing file needs your explicit yes, once per folder,
@@ -302,9 +311,17 @@ server หรือ tools
 ## ภาพรวมความปลอดภัย
 
 - **Tunnel เป็นขาออกเท่านั้น** — ไม่ต้องเปิดอะไรให้อินเทอร์เน็ตเข้าถึงเลย
-- **ขอบเขตไฟล์ default อยู่ที่ `~/Desktop`** บวก path คุ้มครองตายตัว
-  (SSH/AWS/GPG key, Keychain, ที่เก็บ credential ของ browser/แอป) ที่ถูก
-  ปฏิเสธเสมอไม่ว่ากรณีใด
+- **workspace ที่เขียนได้ default คือโฟลเดอร์ `workspace/` ในตัว repo เอง**
+  (เปลี่ยนได้ด้วย `V2_WORKSPACE`) ส่วนการ**อ่าน**ไม่ได้จำกัดอยู่แค่ workspace —
+  `read_file` อ่านได้ทั่วเครื่อง ยกเว้น path คุ้มครองตายตัว (SSH/AWS/GPG key,
+  Keychain, ที่เก็บ credential ของ browser/แอป) ที่ถูกปฏิเสธเสมอไม่ว่ากรณีใด
+  ส่วน `bash`/`bash_bg`/`python_exec` มี `sandbox-exec` ระดับ kernel เพิ่มอีกชั้น
+  ซึ่งเป็นแบบ **deny-list ไม่ใช่ allow-list**: เริ่มจาก `(allow default)` แล้ว
+  **deny** การเขียนไปยัง `~/Desktop`, `~/Documents`, `~/Downloads`, `~/Movies`,
+  `~/Music`, `~/Pictures`, `~/.ssh`, `~/.aws`, `~/.config`, `~/.gnupg`,
+  `~/Library`, `/etc`, `/usr`, `/System` ฯลฯ อย่างชัดเจน แล้วค่อย allow
+  workspace กับ `/private/tmp` ต่อท้าย (last-match-wins) — path ที่ไม่ได้อยู่ใน
+  รายการเหล่านี้ เช่นโฟลเดอร์ที่คุณสร้างเองใน home ยังเขียนได้อยู่
 - **การลบไฟล์ถูกปิดไว้ทุกที่** — บังคับในโค้ด ไม่ปล่อยให้โมเดลตัดสินใจเอง
 - **การแก้ไฟล์เดิมต้องได้รับ "ใช่" จากคุณก่อน ครั้งเดียวต่อโฟลเดอร์ ต่อ
   session** โมเดลไม่สามารถแอบแก้โฟลเดอร์ที่คุณยังไม่อนุญาตได้
