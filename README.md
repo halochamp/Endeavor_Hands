@@ -14,6 +14,37 @@ A small, macOS-native MCP server for controlling this Mac from an MCP client.
 It deliberately keeps only the local-machine primitives; ChatGPT is the agent
 that plans and interprets results.
 
+## Design philosophy: few tools, high capability
+
+Endeavor Hands intentionally keeps the core tool surface small. Instead of
+creating a separate MCP tool for every possible intent, it exposes a few
+high-capability primitives and lets the model reason about how to combine them.
+
+That choice is deliberate: a very large tool catalog can create overlapping
+choices, increase tool-selection ambiguity, and spend model attention deciding
+*which tool to call* instead of solving the task. Endeavor Hands aims for a
+simpler mental model:
+
+- need to inspect local content → `read_file`
+- need to search, run Git, execute tests, or inspect the system → `bash`
+- need to modify an existing file → `edit`
+- need to create or replace a complete file → `write_file`
+- need numerical/data analysis → `python_exec`
+- need visible Mac interaction → `computer`
+- need a specialized external capability → connect another MCP server through
+  the `mcp_*` bridge
+
+The tools are few, but each one is intentionally deep. For example, `read_file`
+handles source code, documents, PDFs, spreadsheets, images, OCR, and media
+transcription; `edit` supports exact-string, line-based, and atomic batch edits;
+and `computer` combines observation, Accessibility/OCR targeting, interaction,
+and post-action verification.
+
+The principle is simple: **keep the tool vocabulary small, make each tool worth
+calling, and leave task-level reasoning to the model.** Specialized capabilities
+can still be added dynamically through MCP without permanently expanding the
+core tool catalog.
+
 ## Architecture
 
 ```mermaid
@@ -232,6 +263,10 @@ then stores the key in the logged-in user's macOS Keychain under
 into the running process environment; neither the launcher nor the tunnel
 profile contains the key.
 
+Each launch also writes an owner-only structured JSON lifecycle log under
+`logs/tunnel-client/`, with a new timestamped file per run. This preserves the
+last shutdown event for troubleshooting without enabling raw HTTP logging.
+
 ## Before sharing
 
 Run the privacy check from this directory:
@@ -264,6 +299,33 @@ OpenAI Codex (coding agent) โดยสิ้นเชิง เมื่อ Co
 MCP server ขนาดเล็กที่รันบน macOS โดยตรง สำหรับให้ MCP client ควบคุมเครื่อง
 Mac เครื่องนี้ได้ ตัว server ตั้งใจให้มีแค่ primitive ระดับเครื่อง (bash,
 ไฟล์, หน้าจอ) เท่านั้น — ChatGPT เป็นตัววางแผนและตีความผลลัพธ์เอง
+
+## แนวคิดการออกแบบ: Tool น้อย แต่แต่ละ Tool ทำได้ลึก
+
+Endeavor Hands ตั้งใจให้ core tool มีจำนวนน้อย แทนที่จะสร้าง MCP tool แยกตาม
+ทุก intent ที่เป็นไปได้ ตัวระบบจะให้ primitive ที่มีความสามารถสูงเพียงไม่กี่ตัว
+แล้วปล่อยให้โมเดลใช้ reasoning เพื่อเลือกวิธีประกอบเครื่องมือเหล่านั้นเอง
+
+เหตุผลคือ tool catalog ที่ใหญ่มากอาจมีหน้าที่ทับซ้อนกัน ทำให้ agent ต้องเสีย
+ความสนใจไปกับการตัดสินใจว่า *ควรเรียก tool ไหน* แทนที่จะใช้ reasoning กับงาน
+ที่ต้องแก้จริง Endeavor Hands จึงพยายามรักษา mental model ให้เรียบง่าย:
+
+- ต้องอ่านหรือทำความเข้าใจเนื้อหาในเครื่อง → `read_file`
+- ต้องค้นหา, ใช้ Git, รัน test หรือคำสั่งระบบ → `bash`
+- ต้องแก้ไฟล์เดิมเฉพาะจุด → `edit`
+- ต้องสร้างหรือแทนที่ไฟล์ทั้งไฟล์ → `write_file`
+- ต้องวิเคราะห์ข้อมูลหรือตัวเลข → `python_exec`
+- ต้องโต้ตอบกับหน้าจอ Mac → `computer`
+- ต้องใช้ความสามารถเฉพาะทางภายนอก → ต่อ MCP server เพิ่มผ่าน `mcp_*` bridge
+
+Tool มีน้อย แต่แต่ละตัวตั้งใจให้ทำงานได้ลึก เช่น `read_file` อ่านได้ทั้ง source
+code, เอกสาร, PDF, spreadsheet, รูปภาพ, OCR และถอดเสียง/วิดีโอ; `edit` รองรับ
+exact-string, line-based และ atomic batch edit; ส่วน `computer` รวมการมองหน้าจอ,
+Accessibility/OCR targeting, การควบคุม และการตรวจผลหลัง action ไว้ใน tool เดียว
+
+หลักการคือ **ทำ vocabulary ของ tool ให้เล็ก แต่ทำให้แต่ละ tool คุ้มค่าที่จะเรียก
+และปล่อย task-level reasoning ไว้กับตัวโมเดล** หากต้องการ capability เฉพาะทาง
+ก็สามารถต่อ MCP เพิ่มแบบ dynamic ได้ โดยไม่ต้องทำให้ core tool catalog โตตามไปด้วย
 
 ## โครงสร้างระบบ
 
@@ -476,6 +538,10 @@ docstring ใน `@mcp.tool()` ที่ `server.py`) ให้ restart tunnel (
 `endeavor-chatgpt-tunnel-runtime` การเปิดครั้งถัดไปจะดึงค่านั้นเข้ามาแค่ใน
 process environment ที่กำลังรันเท่านั้น — ทั้ง launcher และ tunnel profile
 ไม่มี key อยู่ในไฟล์เลย
+
+ทุกการเปิดจะบันทึก structured JSON lifecycle log ที่จำกัดสิทธิ์เฉพาะเจ้าของ
+ไว้ใต้ `logs/tunnel-client/` โดยแยกไฟล์ตามเวลาแต่ละรอบ เพื่อเก็บเหตุการณ์
+สุดท้ายก่อน shutdown สำหรับการวิเคราะห์ โดยไม่เปิด raw HTTP logging
 
 ## ก่อนแชร์ออกไป
 

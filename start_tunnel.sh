@@ -8,6 +8,9 @@ TUNNEL_CLIENT="$PROJECT_DIR/bin/tunnel-client"
 PYTHON_BIN="$PROJECT_DIR/.venv/bin/python3"
 SERVER_PATH="$PROJECT_DIR/server.py"
 PROFILE_NAME="endeavor-chatgpt"
+LOG_DIR="$PROJECT_DIR/logs/tunnel-client"
+RUN_ID="$(/bin/date '+%Y%m%d-%H%M%S')"
+LOG_FILE="$LOG_DIR/tunnel-client-$RUN_ID.jsonl"
 
 [[ -x "$TUNNEL_CLIENT" ]] || {
   print -u2 "Missing executable: $TUNNEL_CLIENT"
@@ -43,5 +46,10 @@ export CONTROL_PLANE_API_KEY
   --mcp-command "$PYTHON_BIN $SERVER_PATH"
 
 "$TUNNEL_CLIENT" doctor --profile "$PROFILE_NAME" --explain
+umask 077
+mkdir -p "$LOG_DIR"
 print "Tunnel is ready. Keep this Terminal open while using the ChatGPT app."
-exec "$TUNNEL_CLIENT" run --profile "$PROFILE_NAME" --mcp.connection-max-ttl 168h0m0s
+print "Structured tunnel log: $LOG_FILE"
+exec "$TUNNEL_CLIENT" run --profile "$PROFILE_NAME" --mcp.connection-max-ttl 168h0m0s \
+  --log.format json \
+  --log.file "$LOG_FILE"

@@ -14,6 +14,9 @@ TUNNEL_CLIENT="$PROJECT_DIR/bin/tunnel-client"
 PROFILE_NAME="endeavor-chatgpt"
 KEYCHAIN_SERVICE="endeavor-chatgpt-tunnel-runtime"
 STATUS_URL="http://127.0.0.1:8765"
+LOG_DIR="$PROJECT_DIR/logs/tunnel-client"
+RUN_ID="$(/bin/date '+%Y%m%d-%H%M%S')"
+LOG_FILE="$LOG_DIR/tunnel-client-$RUN_ID.jsonl"
 
 [[ -x "$TUNNEL_CLIENT" ]] || {
   print -u2 "Missing tunnel-client: $TUNNEL_CLIENT"
@@ -50,5 +53,14 @@ export CONTROL_PLANE_API_KEY
 export V2_WORKSPACE="$WORKSPACE_DIR"
 # File removal is forbidden even within the writable workspace.
 export V2_DENY_FILE_DELETION=1
+
+# Preserve structured lifecycle diagnostics if the tunnel exits. Raw HTTP
+# logging remains disabled, so request/response bodies and credentials are not
+# captured.
+umask 077
+mkdir -p "$LOG_DIR"
 print "Starting Endeavor Hands tunnel. Keep this Terminal window open."
-exec "$TUNNEL_CLIENT" run --profile "$PROFILE_NAME" --mcp.connection-max-ttl 168h0m0s
+print "Structured tunnel log: $LOG_FILE"
+exec "$TUNNEL_CLIENT" run --profile "$PROFILE_NAME" --mcp.connection-max-ttl 168h0m0s \
+  --log.format json \
+  --log.file "$LOG_FILE"
