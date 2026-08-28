@@ -162,7 +162,9 @@ def git(
     `add` requires explicit paths; `commit` commits only already-staged changes; `push` uses an
     existing configured remote and never force-pushes. Git hooks and commit signing are disabled
     for guarded commits so repository code cannot escape the intended operation. A confirmed stale
-    zero-byte `.git/index.lock` may be moved to a timestamped backup when no writer owns it.
+    `.git/index.lock` may be moved to a timestamped backup when no writer owns it; non-empty locks
+    must also parse successfully as a complete Git index before automatic recovery is allowed.
+    HTTPS pushes obtain stored macOS Git credentials through a fixed trusted helper path.
 
     Mutation actions should only be used when the user explicitly asked for the corresponding Git
     change. Source-file deletion remains blocked; the extra unlink permission is scoped only to the

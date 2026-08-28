@@ -14,7 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import config
 from tools.bash import _build_sandbox_profile
-from tools.git import _git_impl
+from tools.git import _git_impl, _git_profile, _https_basic_auth_env
 
 
 class GuardedGitToolTests(unittest.TestCase):
@@ -107,6 +107,58 @@ class GuardedGitToolTests(unittest.TestCase):
         backups = list((self.repo / ".git").glob("index.lock.stale-*"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_bytes(), b"")
+
+    def test_non_empty_valid_stale_index_lock_is_moved_to_backup(self) -> None:
+        source = self.repo / "tracked.txt"
+        source.write_text("v1\n", encoding="utf-8")
+        self.assertNotIn("[error]", _git_impl("add", repo=str(self.repo), paths=["tracked.txt"]))
+        self.assertNotIn("[error]", _git_impl("commit", repo=str(self.repo), message="initial"))
+
+        source.write_text("v2\n", encoding="utf-8")
+        git_dir = self.repo / ".git"
+        index_bytes = (git_dir / "index").read_bytes()
+        lock = git_dir / "index.lock"
+        lock.write_bytes(index_bytes)
+        old = time.time() - 60
+        os.utime(lock, (old, old))
+
+        result = _git_impl("add", repo=str(self.repo), paths=["tracked.txt"])
+        self.assertNotIn("[error]", result, result)
+        self.assertIn("moved stale index lock", result)
+        self.assertFalse(lock.exists())
+        backups = list(git_dir.glob("index.lock.stale-*"))
+        self.assertEqual(len(backups), 1)
+        self.assertEqual(backups[0].read_bytes(), index_bytes)
+
+    def test_non_empty_invalid_stale_index_lock_is_refused(self) -> None:
+        source = self.repo / "tracked.txt"
+        source.write_text("v1\n", encoding="utf-8")
+        git_dir = self.repo / ".git"
+        lock = git_dir / "index.lock"
+        lock.write_bytes(b"not-a-git-index")
+        old = time.time() - 60
+        os.utime(lock, (old, old))
+
+        result = _git_impl("add", repo=str(self.repo), paths=["tracked.txt"])
+        self.assertIn("not a valid Git index", result)
+        self.assertTrue(lock.exists())
+
+    def test_https_push_profile_does_not_allow_shell_or_credential_helper_exec(self) -> None:
+        profile = _git_profile(
+            str(self.workspace),
+            str(self.repo / ".git"),
+            mutate=True,
+            push_transport="https",
+        )
+        self.assertNotIn('(literal "/bin/sh")', profile)
+        self.assertNotIn("git-credential-osxkeychain", profile)
+
+    def test_https_auth_env_disables_git_helper_chain(self) -> None:
+        env = _https_basic_auth_env("alice", "secret")
+        self.assertEqual(env["GIT_CONFIG_VALUE_0"], "")
+        self.assertEqual(env["GIT_CONFIG_KEY_0"], "credential.helper")
+        self.assertEqual(env["GIT_CONFIG_KEY_1"], "http.extraHeader")
+        self.assertEqual(env["GIT_CONFIG_VALUE_1"], "Authorization: Basic YWxpY2U6c2VjcmV0")
 
     def test_add_rejects_implicit_whole_repository_staging(self) -> None:
         result = _git_impl("add", repo=str(self.repo), paths=[])

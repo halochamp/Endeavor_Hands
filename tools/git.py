@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import re
 import shutil
@@ -8,6 +9,7 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Iterable
+from urllib.parse import urlsplit
 
 from tools.bash import _build_sandbox_profile
 from tools._truncate import truncate_with_save
@@ -144,8 +146,35 @@ def _lock_has_writer(lock_path: str) -> bool | None:
     return any(mode in {"w", "u"} for mode in access_modes)
 
 
-def _recover_zero_byte_stale_index_lock(git_dir: str) -> str | None:
-    """Move a demonstrably stale zero-byte index.lock aside; never delete it."""
+def _index_lock_is_valid(repo_root: str, lock_path: str) -> bool:
+    """Ask Git to parse a candidate lock file as an index without mutating the repo."""
+    env = os.environ.copy()
+    env["GIT_INDEX_FILE"] = lock_path
+    env["GIT_OPTIONAL_LOCKS"] = "0"
+    try:
+        result = subprocess.run(
+            [_GIT_BIN, "-C", repo_root, "-c", "core.fsmonitor=false", "ls-files", "--stage"],
+            capture_output=True,
+            text=True,
+            stdin=subprocess.DEVNULL,
+            timeout=10,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _recover_stale_index_lock(repo_root: str, git_dir: str) -> str | None:
+    """Move a demonstrably stale index.lock aside; never delete it.
+
+    Zero-byte locks may be recovered after the age/writer checks. A non-empty lock
+    gets one extra gate: Git itself must be able to parse it as a complete index.
+    This avoids auto-moving arbitrary/corrupt metadata while still recovering the
+    common case where Git finished writing the new index but failed during the
+    final rename/cleanup step. The original lock is preserved as a timestamped
+    backup for manual inspection/recovery.
+    """
     lock = os.path.join(git_dir, "index.lock")
     if not os.path.exists(lock):
         return None
@@ -155,8 +184,6 @@ def _recover_zero_byte_stale_index_lock(git_dir: str) -> str | None:
     except OSError as exc:
         raise RuntimeError(f"cannot inspect existing Git index lock: {exc}") from exc
 
-    if stat_result.st_size != 0:
-        raise RuntimeError("Git index.lock exists and is non-empty; refusing automatic recovery")
     if time.time() - stat_result.st_mtime < _STALE_LOCK_MIN_AGE_SECONDS:
         raise RuntimeError("Git index.lock is too recent to treat as stale")
 
@@ -166,6 +193,9 @@ def _recover_zero_byte_stale_index_lock(git_dir: str) -> str | None:
     if writer:
         raise RuntimeError("Git index.lock is actively held for writing; refusing recovery")
 
+    if stat_result.st_size and not _index_lock_is_valid(repo_root, lock):
+        raise RuntimeError("Git index.lock is non-empty but is not a valid Git index; refusing automatic recovery")
+
     stamp = time.strftime("%Y%m%dT%H%M%S")
     backup = os.path.join(git_dir, f"index.lock.stale-{stamp}")
     suffix = 1
@@ -174,6 +204,68 @@ def _recover_zero_byte_stale_index_lock(git_dir: str) -> str | None:
         suffix += 1
     os.replace(lock, backup)
     return backup
+
+
+def _https_basic_auth_env(username: str, password: str) -> dict[str, str]:
+    basic = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
+    return {
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": "http.extraHeader",
+        "GIT_CONFIG_VALUE_1": f"Authorization: Basic {basic}",
+    }
+
+
+def _https_keychain_auth_env(remote_url: str) -> dict[str, str]:
+    """Fetch a stored HTTPS credential directly, without invoking a shell helper.
+
+    Git normally runs credential helpers through `/bin/sh -c`, which conflicts
+    with this tool's process-exec sandbox and would be unsafe to allow broadly.
+    We instead execute the known Homebrew osxkeychain helper directly, keep the
+    secret in memory, disable Git's helper chain for the push, and provide a
+    one-shot Authorization header through command-scope environment config.
+    """
+    parsed = urlsplit(remote_url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise RuntimeError("invalid HTTPS remote URL")
+    if not _GIT_CREDENTIAL_OSXKEYCHAIN or not os.path.exists(_GIT_CREDENTIAL_OSXKEYCHAIN):
+        raise RuntimeError("HTTPS push requires git-credential-osxkeychain, but it is not available")
+
+    host = parsed.hostname
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    fields = ["protocol=https", f"host={host}"]
+    if parsed.username:
+        fields.append(f"username={parsed.username}")
+    request = "\n".join(fields) + "\n\n"
+
+    try:
+        result = subprocess.run(
+            [_GIT_CREDENTIAL_OSXKEYCHAIN, "get"],
+            input=request,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise RuntimeError("could not query the macOS Git credential helper") from exc
+    if result.returncode != 0:
+        raise RuntimeError("macOS Git credential helper did not return a usable credential")
+
+    values: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        if "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        if key in {"username", "password"}:
+            values[key] = value
+    username = values.get("username") or parsed.username or ""
+    password = values.get("password") or ""
+    if not username or not password:
+        raise RuntimeError("no stored HTTPS GitHub credential was found in macOS Keychain")
+
+    return _https_basic_auth_env(username, password)
 
 
 def _git_profile(
@@ -199,8 +291,6 @@ def _git_profile(
         elif push_transport == "https":
             if _GIT_REMOTE_HTTPS and os.path.exists(_GIT_REMOTE_HTTPS):
                 allowed_execs.append(_GIT_REMOTE_HTTPS)
-            if _GIT_CREDENTIAL_OSXKEYCHAIN and os.path.exists(_GIT_CREDENTIAL_OSXKEYCHAIN):
-                allowed_execs.append(_GIT_CREDENTIAL_OSXKEYCHAIN)
 
     profile = _build_sandbox_profile(
         workspace,
@@ -220,6 +310,7 @@ def _run_guarded_git(
     timeout: int,
     mutate: bool = False,
     push_transport: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     profile_path: str | None = None
     try:
@@ -230,6 +321,8 @@ def _run_guarded_git(
 
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
+        if extra_env:
+            env.update(extra_env)
         if not mutate:
             env["GIT_OPTIONAL_LOCKS"] = "0"
         result = subprocess.run(
@@ -306,7 +399,7 @@ def _git_impl(
         if action == "add":
             if not normalized_paths:
                 return "[error] add requires explicit paths; staging the whole repository implicitly is not allowed"
-            recovered = _recover_zero_byte_stale_index_lock(git_dir)
+            recovered = _recover_stale_index_lock(repo_root, git_dir)
             result = _run_guarded_git(
                 WORKSPACE,
                 repo_root,
@@ -328,7 +421,7 @@ def _git_impl(
                 return f"[error] commit message exceeds {_MAX_COMMIT_MESSAGE_CHARS} characters"
             if normalized_paths:
                 return "[error] commit does not accept paths; stage explicit paths with action=add first"
-            recovered = _recover_zero_byte_stale_index_lock(git_dir)
+            recovered = _recover_stale_index_lock(repo_root, git_dir)
             result = _run_guarded_git(
                 WORKSPACE,
                 repo_root,
@@ -360,6 +453,7 @@ def _git_impl(
             branch_name = branch_probe.stdout.strip()
         branch_name = _validate_ref(branch_name, "branch")
 
+        push_env = _https_keychain_auth_env(remote_url) if transport == "https" else None
         result = _run_guarded_git(
             WORKSPACE,
             repo_root,
@@ -368,6 +462,7 @@ def _git_impl(
             timeout=timeout,
             mutate=True,
             push_transport=transport,
+            extra_env=push_env,
         )
         output = _format_result(result, WORKSPACE)
         if result.returncode == 0:

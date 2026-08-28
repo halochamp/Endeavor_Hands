@@ -78,7 +78,7 @@ full detail behind each one.
 | Tool | What it does | Guardrail |
 |---|---|---|
 | `bash` | Run a shell command | Runs inside a sandbox profile scoped to the workspace; file-deletion commands are refused |
-| `git` | Guarded repository operations (`status`, `diff`, explicit-path `add`, `commit`, non-force `push`) | Repository must be inside the approved workspace; mutation is scoped to Git metadata; hooks/signing and unsafe transports are disabled |
+| `git` | Guarded repository operations (`status`, `diff`, explicit-path `add`, `commit`, non-force `push`) | Repository must be inside the approved workspace; mutation is scoped to Git metadata; hooks/signing and unsafe transports are disabled; stale non-empty `index.lock` recovery requires a parseable Git index; HTTPS credentials are read directly from the trusted macOS Keychain helper without enabling shell-based helpers |
 | `bash_bg` | Start/poll/kill a background shell job | Same sandbox as `bash` |
 | `python_exec` | Run Python code with the server's own interpreter | Same sandbox as `bash` |
 | `read_file` | Read text, code, PDF/Word/Excel, images, audio/video | Reads anywhere except a fixed list of protected system/credential paths |
@@ -361,7 +361,7 @@ Server เปิด MCP tool 12 ตัว ทุกตัวที่แก้�
 | Tool | ทำอะไร | Guardrail |
 |---|---|---|
 | `bash` | รันคำสั่ง shell | รันใน sandbox profile จำกัดใน workspace; คำสั่งลบไฟล์ถูกปฏิเสธ |
-| `git` | ทำงานกับ repository แบบ guarded (`status`, `diff`, `add` ระบุ path, `commit`, `push` แบบไม่ force) | repo ต้องอยู่ใน workspace ที่อนุมัติ; สิทธิ์ mutation จำกัดที่ Git metadata; ปิด hook/signing และ transport ที่ไม่ปลอดภัย |
+| `git` | ทำงานกับ repository แบบ guarded (`status`, `diff`, `add` ระบุ path, `commit`, `push` แบบไม่ force) | repo ต้องอยู่ใน workspace ที่อนุมัติ; สิทธิ์ mutation จำกัดที่ Git metadata; ปิด hook/signing และ transport ที่ไม่ปลอดภัย; การกู้ `index.lock` แบบ non-empty ต้องเป็น Git index ที่ parse ได้; HTTPS อ่าน credential โดยตรงจาก trusted macOS Keychain helper โดยไม่เปิด shell-based helper |
 | `bash_bg` | เริ่ม/ตรวจสอบ/ปิด background job | sandbox เดียวกับ `bash` |
 | `python_exec` | รัน Python ด้วย interpreter ของ server เอง | sandbox เดียวกับ `bash` |
 | `read_file` | อ่านข้อความ, โค้ด, PDF/Word/Excel, รูปภาพ, เสียง/วิดีโอ | อ่านได้ทุกที่ ยกเว้น path ระบบ/credential ที่กำหนดไว้ตายตัว |
