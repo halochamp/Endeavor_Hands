@@ -19,8 +19,10 @@ READ_FILE_AUDIO_VIDEO_MAX_BYTES = int(os.getenv("V2_READ_FILE_AUDIO_VIDEO_MAX_BY
 READ_FILE_AUDIO_VIDEO_MAX_DURATION_SEC = int(os.getenv("V2_READ_FILE_AUDIO_VIDEO_MAX_DURATION_SEC", str(90 * 60)))
 
 # ── MCP bridge (mcp_list_tools / mcp_call_tool / mcp_add_server / mcp_remove_server) ──
-# name -> {"url": str, "headers": dict[str, str]}. Empty by default — add a
-# server here to make it reachable, no code change needed elsewhere.
+# Supports Streamable HTTP and local stdio. HTTP entries use {"url", "headers"};
+# stdio entries use {"transport": "stdio", "command": <absolute executable>,
+# "args": [...], "cwd": <path inside WORKSPACE>}. Dynamic registrations live
+# under Endeavor_Hands/work/tool_mcp/ rather than in WORKSPACE.
 # Example (not enabled):
 #   MCP_SERVERS = {"worldmonitor": {"url": "https://worldmonitor.app/mcp",
 #                                    "headers": {"X-WorldMonitor-Key": os.getenv("WORLDMONITOR_API_KEY", "")}}}

@@ -23,6 +23,8 @@ from tools.bash import _build_sandbox_profile
 _MAX_JOBS = 5
 _KILL_GRACE_SECONDS = 3
 _TAIL_CHARS = 2_000
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_WORK_DIR = _PROJECT_ROOT / "work"
 
 # Popen handles for jobs started by THIS process — gives an exact exit code via
 # proc.poll(). Lost across an agent restart (registry survives, this dict doesn't);
@@ -48,6 +50,10 @@ def _cleanup_profile(job_id: str) -> None:
 
 
 def _registry_path() -> Path:
+    return _WORK_DIR / "bash_jobs.json"
+
+
+def _legacy_registry_path() -> Path:
     from config import WORKSPACE
     return Path(WORKSPACE) / "bash_jobs.json"
 
@@ -70,8 +76,9 @@ class _Registry:
         return handle
 
     def load(self, *, strict: bool = False) -> list[dict]:
+        path = self.path if self.path.exists() else _legacy_registry_path()
         try:
-            raw = self.path.read_text(encoding="utf-8")
+            raw = path.read_text(encoding="utf-8")
         except OSError:
             return []
         try:
@@ -172,8 +179,8 @@ def bash_bg(action: str, command: str = "", job_id: str = "") -> str:
 
     actions:
       start  — command required. Spawns under the same sandbox as `bash` (workspace/
-               and /tmp writable only), stdout+stderr redirected to a log file in
-               workspace/. Returns job_id + log path right away; the command keeps
+               and /tmp writable only), stdout+stderr redirected to a log file under
+               Endeavor_Hands/work/. Returns job_id + log path right away; the command keeps
                running after this call returns. Max 5 concurrent jobs.
       status — job_id required. Returns running/exited (+ exit code when known) and
                the last ~2,000 chars of the log.
@@ -214,7 +221,8 @@ def bash_bg(action: str, command: str = "", job_id: str = "") -> str:
                 return None
 
             job_id = uuid.uuid4().hex[:8]
-            log_path = str(Path(WORKSPACE) / f"_bash_bg_{job_id}.log")
+            _WORK_DIR.mkdir(parents=True, exist_ok=True)
+            log_path = str(_WORK_DIR / f"_bash_bg_{job_id}.log")
             profile = _build_sandbox_profile(WORKSPACE)
             profile_fd, profile_path = tempfile.mkstemp(suffix=".sb")
             try:

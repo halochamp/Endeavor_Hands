@@ -194,8 +194,8 @@ def bash_bg(action: str, command: str = "", job_id: str = "") -> str:
 
     actions:
       start  — command required. Spawns under the same sandbox as `bash` (workspace/ and /tmp
-               writable only), stdout+stderr redirected to a log file in workspace/. Returns
-               job_id + log path right away; the command keeps running after this call returns.
+               writable only), stdout+stderr redirected to a log file under Endeavor_Hands/work/.
+               Returns job_id + log path right away; the command keeps running after this call returns.
                Max 5 concurrent jobs.
       status — job_id required. Returns running/exited (+ exit code when known) and the last
                ~2,000 chars of the log.
@@ -604,7 +604,7 @@ def computer(
 @mcp.tool()
 @_logged("mcp_list_tools")
 def mcp_list_tools(server: str) -> str:
-    """List the tools exposed by a configured MCP (Model Context Protocol) server.
+    """List the tools exposed by a configured HTTP or local stdio MCP server.
     Use to discover what a connected MCP server can do before calling mcp_call_tool.
     If the server name isn't known yet, register it first with mcp_add_server.
     Args:
@@ -616,7 +616,7 @@ def mcp_list_tools(server: str) -> str:
 @mcp.tool()
 @_logged("mcp_call_tool")
 def mcp_call_tool(server: str, tool_name: str, arguments_json: str = "{}") -> str:
-    """Call a tool exposed by a configured MCP (Model Context Protocol) server.
+    """Call a tool exposed by a configured HTTP or local stdio MCP server.
     Run mcp_list_tools first to see available tool names and confirm what arguments they expect.
     Args:
         server: name of the server, as registered via mcp_add_server or config.MCP_SERVERS
@@ -628,26 +628,37 @@ def mcp_call_tool(server: str, tool_name: str, arguments_json: str = "{}") -> st
 
 @mcp.tool()
 @_logged("mcp_add_server")
-def mcp_add_server(name: str, url: str, headers_json: str = "{}") -> str:
-    """Register a new MCP (Model Context Protocol) server so mcp_list_tools/mcp_call_tool can use it.
-    Use this yourself whenever the user gives you an MCP server's URL (and optionally an API
-    key/header) to connect — this persists in the workspace, no developer action needed.
-    To EDIT an existing server (new url and/or headers), call this again with the same name — it
-    overwrites that entry. To remove one entirely, use mcp_remove_server.
-    Args:
-        name: short identifier to refer to this server later, e.g. "worldmonitor"
-        url: the MCP server's endpoint, e.g. "https://worldmonitor.app/mcp"
-        headers_json: JSON object string of HTTP headers such as an API key, e.g.
-            '{"X-WorldMonitor-Key": "wm_xxx"}' (default: no extra headers)
+def mcp_add_server(
+    name: str,
+    url: str = "",
+    headers_json: str = "{}",
+    command: str = "",
+    args_json: str = "[]",
+    cwd: str = "",
+) -> str:
+    """Register an HTTP or local stdio MCP server for mcp_list_tools/mcp_call_tool.
+
+    HTTP: provide `url` plus optional `headers_json`.
+    stdio: provide an absolute executable `command`, optional JSON-array `args_json`, and optional
+    `cwd` inside the approved workspace. Exactly one of url or command is required. stdio servers
+    are launched directly without a shell and under Hands' sandbox. Registrations persist under
+    Endeavor_Hands/work/tool_mcp/.
     """
-    return _mcp_add_server_tool.func(name=name, url=url, headers_json=headers_json)
+    return _mcp_add_server_tool.func(
+        name=name,
+        url=url,
+        headers_json=headers_json,
+        command=command,
+        args_json=args_json,
+        cwd=cwd,
+    )
 
 
 @mcp.tool()
 @_logged("mcp_remove_server")
 def mcp_remove_server(name: str) -> str:
     """Remove a previously self-registered MCP server (one added via mcp_add_server).
-    Only removes entries from the workspace registry — has no effect on a server hardcoded in
+    Only removes entries from the project-local work/tool_mcp registry — has no effect on a server hardcoded in
     config.MCP_SERVERS (that requires a developer to edit config.py).
     Args:
         name: the server name to remove, exactly as passed to mcp_add_server

@@ -1,40 +1,64 @@
-"""mcp_client.py — generic MCP (Model Context Protocol) client over Streamable HTTP
+"""mcp_client.py — generic MCP client over Streamable HTTP or local stdio.
 
-Two registries are merged by name: config.MCP_SERVERS (developer-provisioned,
-survives a workspace wipe) and workspace/tool_mcp/servers.json (agent
-self-service — config.py lives outside workspace/, and this fork's write_file/
-edit enforce a create-only-outside-workspace policy, so the agent itself can
-never edit config.py in place; mcp_add_server lets it register a server
-without any developer action, see that tool's docstring). Workspace entries
-win on a name collision. Uses the official `mcp` SDK's streamablehttp_client +
-ClientSession (already installed transitively via browser-use; imported
-lazily so a missing package fails as a clean [error], not an import-time
-crash for every tool).
+Two registries are merged by name: config.MCP_SERVERS (developer-provisioned)
+and a dynamic registry under Endeavor Hands' project-local work/ directory.
+Dynamic entries win on name collisions. HTTP servers use the official MCP SDK's
+streamable HTTP client. Local stdio servers are spawned without a shell and run
+under the same guarded sandbox profile as Hands' shell tools.
 """
 from __future__ import annotations
+
 import asyncio
 import fcntl
 import json
 import os
+import shutil
 import sys
+import tempfile
 import uuid
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
+from typing import Callable, Coroutine, TypeVar
+
 from langchain_core.tools import tool
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from config import MCP_SERVERS, MCP_MAX_CHARS, MCP_TIMEOUT, WORKSPACE
+from config import MCP_MAX_CHARS, MCP_SERVERS, MCP_TIMEOUT, WORKSPACE
+from tools.bash import _build_sandbox_profile
+
+_T = TypeVar("_T")
+_SANDBOX_EXEC = shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec"
+_PROJECT_ROOT = Path(__file__).resolve().parents[1]
+_WORK_DIR = _PROJECT_ROOT / "work"
+
+
+def _inside(path: str, root: str) -> bool:
+    try:
+        return os.path.commonpath((os.path.realpath(path), os.path.realpath(root))) == os.path.realpath(root)
+    except ValueError:
+        return False
 
 
 def _dynamic_path() -> Path:
+    return _WORK_DIR / "tool_mcp" / "servers.json"
+
+
+def _legacy_dynamic_path() -> Path:
     return Path(WORKSPACE) / "tool_mcp" / "servers.json"
 
 
 def _load_dynamic_servers(*, strict: bool = False) -> dict:
-    """Best-effort read of the agent-self-service registry — missing file,
-    malformed JSON, or a non-dict shape all degrade to {} rather than raise."""
+    """Read the project-local registry, falling back to the former workspace path.
+
+    Once any mutation is saved, work/tool_mcp/servers.json becomes canonical.
+    This preserves existing registrations across the runtime-artifact migration.
+    """
+    path = _dynamic_path()
+    if not path.exists():
+        path = _legacy_dynamic_path()
     try:
-        data = json.loads(_dynamic_path().read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except FileNotFoundError:
         return {}
@@ -52,9 +76,7 @@ def _save_dynamic_servers(servers: dict) -> None:
     """Atomic private write; caller holds ``_dynamic_registry_lock``."""
     path = _dynamic_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(
-        f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
-    )
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as stream:
@@ -94,26 +116,124 @@ def _cap(text: str) -> str:
     return text[:MCP_MAX_CHARS] + f"\n...[truncated at {MCP_MAX_CHARS} chars]"
 
 
-async def _list_tools_async(url: str, headers: dict) -> str:
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
+def _normalise_server_config(cfg: dict) -> dict:
+    if not isinstance(cfg, dict):
+        raise ValueError("MCP server configuration must be an object")
 
-    async with streamablehttp_client(url, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.list_tools()
+    url = str(cfg.get("url") or "").strip()
+    command = str(cfg.get("command") or "").strip()
+    transport = str(cfg.get("transport") or ("streamable-http" if url else "stdio" if command else "")).strip()
+
+    if transport in {"http", "https", "streamable-http"}:
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("HTTP MCP server url must start with http:// or https://")
+        headers = cfg.get("headers") or {}
+        if not isinstance(headers, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in headers.items()):
+            raise ValueError("HTTP MCP headers must be a string-to-string object")
+        return {"transport": "streamable-http", "url": url, "headers": headers}
+
+    if transport == "stdio":
+        if not command:
+            raise ValueError("stdio MCP server requires command")
+        expanded = os.path.expanduser(command)
+        if not os.path.isabs(expanded):
+            raise ValueError("stdio MCP command must be an absolute executable path")
+        command_path = os.path.realpath(expanded)
+        if not os.path.isfile(command_path) or not os.access(command_path, os.X_OK):
+            raise ValueError("stdio MCP command does not exist or is not executable")
+
+        args = cfg.get("args") or []
+        if not isinstance(args, list) or not all(isinstance(item, str) and "\x00" not in item for item in args):
+            raise ValueError("stdio MCP args must be a JSON array of strings")
+
+        cwd_value = str(cfg.get("cwd") or WORKSPACE)
+        cwd = os.path.realpath(os.path.expanduser(cwd_value))
+        if not os.path.isdir(cwd):
+            raise ValueError("stdio MCP cwd does not exist or is not a directory")
+        if not _inside(cwd, WORKSPACE):
+            raise ValueError("stdio MCP cwd must be inside the approved workspace")
+
+        return {"transport": "stdio", "command": command_path, "args": args, "cwd": cwd}
+
+    raise ValueError("MCP transport must be streamable-http or stdio")
+
+
+def _run_async(factory: Callable[[], Coroutine[object, object, _T]]) -> _T:
+    """Run one MCP coroutine from both plain sync code and a running event-loop thread.
+
+    FastMCP may invoke sync tool functions while its asyncio loop is already running.
+    Calling asyncio.run() in that thread raises immediately, so in that case the MCP
+    round trip gets its own short-lived worker thread and event loop. The coroutine is
+    created inside that worker, avoiding cross-loop coroutine ownership.
+    """
+
+    async def _bounded() -> _T:
+        return await asyncio.wait_for(factory(), timeout=MCP_TIMEOUT)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_bounded())
+
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="endeavor-mcp") as pool:
+        future = pool.submit(lambda: asyncio.run(_bounded()))
+        try:
+            return future.result(timeout=MCP_TIMEOUT + 5)
+        except FutureTimeoutError as exc:
+            future.cancel()
+            raise TimeoutError(f"MCP operation exceeded {MCP_TIMEOUT}s") from exc
+
+
+@asynccontextmanager
+async def _open_session(cfg: dict):
+    from mcp import ClientSession
+
+    cfg = _normalise_server_config(cfg)
+    if cfg["transport"] == "streamable-http":
+        from mcp.client.streamable_http import streamablehttp_client
+
+        async with streamablehttp_client(cfg["url"], headers=cfg["headers"]) as (read, write, _):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+        return
+
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    _WORK_DIR.mkdir(parents=True, exist_ok=True)
+    profile_path: str | None = None
+    try:
+        profile = _build_sandbox_profile(WORKSPACE)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".sb", dir=_WORK_DIR, delete=False) as handle:
+            handle.write(profile)
+            profile_path = handle.name
+        params = StdioServerParameters(
+            command=_SANDBOX_EXEC,
+            args=["-f", profile_path, cfg["command"], *cfg["args"]],
+            cwd=cfg["cwd"],
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+    finally:
+        if profile_path:
+            try:
+                os.unlink(profile_path)
+            except OSError:
+                pass
+
+
+async def _list_tools_async(cfg: dict) -> str:
+    async with _open_session(cfg) as session:
+        result = await session.list_tools()
     lines = [f"{t.name}: {t.description or '(no description)'}" for t in result.tools]
     return "\n".join(lines) if lines else "(no tools exposed)"
 
 
-async def _call_tool_async(url: str, headers: dict, tool_name: str, arguments: dict) -> str:
-    from mcp import ClientSession
-    from mcp.client.streamable_http import streamablehttp_client
-
-    async with streamablehttp_client(url, headers=headers) as (read, write, _):
-        async with ClientSession(read, write) as session:
-            await session.initialize()
-            result = await session.call_tool(tool_name, arguments)
+async def _call_tool_async(cfg: dict, tool_name: str, arguments: dict) -> str:
+    async with _open_session(cfg) as session:
+        result = await session.call_tool(tool_name, arguments)
     parts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
     body = "\n".join(parts) if parts else "(tool returned no text content)"
     return f"[error] {tool_name} returned an error: {body}" if result.isError else body
@@ -121,96 +241,97 @@ async def _call_tool_async(url: str, headers: dict, tool_name: str, arguments: d
 
 @tool
 def mcp_list_tools(server: str) -> str:
-    """List the tools exposed by a configured MCP (Model Context Protocol) server.
-    Use to discover what a connected MCP server can do before calling mcp_call_tool.
-    If the server name isn't known yet, register it first with mcp_add_server.
-    Args:
-        server: name of the server, as registered via mcp_add_server or config.MCP_SERVERS"""
+    """List tools exposed by a configured HTTP or stdio MCP server."""
     cfg = _all_servers().get(server)
     if cfg is None:
         return f"[error] no MCP server named '{server}' configured — known servers: {_known_servers()}"
     try:
-        raw = asyncio.run(asyncio.wait_for(
-            _list_tools_async(cfg["url"], cfg.get("headers") or {}), MCP_TIMEOUT))
-        return _cap(raw)
-    except Exception as e:
-        return f"[error] mcp_list_tools failed for '{server}': {e}"
+        return _cap(_run_async(lambda: _list_tools_async(cfg)))
+    except Exception as exc:
+        return f"[error] mcp_list_tools failed for '{server}': {exc}"
 
 
 @tool
 def mcp_call_tool(server: str, tool_name: str, arguments_json: str = "{}") -> str:
-    """Call a tool exposed by a configured MCP (Model Context Protocol) server.
-    Run mcp_list_tools first to see available tool names and confirm what arguments they expect.
-    Args:
-        server: name of the server, as registered via mcp_add_server or config.MCP_SERVERS
-        tool_name: exact tool name returned by mcp_list_tools
-        arguments_json: JSON object string of arguments for the tool, e.g. '{"query": "..."}' (default: no arguments)"""
+    """Call a tool exposed by a configured HTTP or stdio MCP server."""
     cfg = _all_servers().get(server)
     if cfg is None:
         return f"[error] no MCP server named '{server}' configured — known servers: {_known_servers()}"
     try:
         arguments = json.loads(arguments_json or "{}")
-    except json.JSONDecodeError as e:
-        return f"[error] invalid arguments_json: {e}"
+    except json.JSONDecodeError as exc:
+        return f"[error] invalid arguments_json: {exc}"
     if not isinstance(arguments, dict):
         return "[error] arguments_json must be a JSON object, e.g. '{\"key\": \"value\"}'"
     try:
-        raw = asyncio.run(asyncio.wait_for(
-            _call_tool_async(cfg["url"], cfg.get("headers") or {}, tool_name, arguments), MCP_TIMEOUT))
-        return _cap(raw)
-    except Exception as e:
-        return f"[error] mcp_call_tool failed for '{server}.{tool_name}': {e}"
+        return _cap(_run_async(lambda: _call_tool_async(cfg, tool_name, arguments)))
+    except Exception as exc:
+        return f"[error] mcp_call_tool failed for '{server}.{tool_name}': {exc}"
 
 
 @tool
-def mcp_add_server(name: str, url: str, headers_json: str = "{}") -> str:
-    """Register a new MCP (Model Context Protocol) server so mcp_list_tools/mcp_call_tool
-    can use it. Use this yourself whenever the user gives you an MCP server's URL (and
-    optionally an API key/header) to connect — this persists in the workspace, no
-    developer action needed.
-    To EDIT an existing server (new url and/or headers), call this again with the
-    same name — it overwrites that entry. To remove one entirely, use mcp_remove_server.
-    Args:
-        name: short identifier to refer to this server later, e.g. "worldmonitor"
-        url: the MCP server's endpoint, e.g. "https://worldmonitor.app/mcp"
-        headers_json: JSON object string of HTTP headers such as an API key, e.g.
-            '{"X-WorldMonitor-Key": "wm_xxx"}' (default: no extra headers)
-    Example: mcp_add_server(name="worldmonitor", url="https://worldmonitor.app/mcp",
-        headers_json='{"X-WorldMonitor-Key": "wm_xxx"}'), then confirm with
-        mcp_list_tools(server="worldmonitor")."""
+def mcp_add_server(
+    name: str,
+    url: str = "",
+    headers_json: str = "{}",
+    command: str = "",
+    args_json: str = "[]",
+    cwd: str = "",
+) -> str:
+    """Register an HTTP or local stdio MCP server.
+
+    HTTP: provide url and optional headers_json.
+    stdio: provide an absolute executable command, optional args_json array, and
+    optional cwd inside the approved workspace. Exactly one of url or command is
+    required. stdio is spawned directly without a shell and inside Hands' sandbox.
+    """
     name = (name or "").strip()
     if not name:
         return "[error] name is required"
-    if not url.startswith(("http://", "https://")):
-        return "[error] url must start with http:// or https://"
+    url = (url or "").strip()
+    command = (command or "").strip()
+    if bool(url) == bool(command):
+        return "[error] provide exactly one transport: url for HTTP or command for stdio"
+
     try:
         headers = json.loads(headers_json or "{}")
-    except json.JSONDecodeError as e:
-        return f"[error] invalid headers_json: {e}"
+    except json.JSONDecodeError as exc:
+        return f"[error] invalid headers_json: {exc}"
     if not isinstance(headers, dict):
-        return "[error] headers_json must be a JSON object, e.g. '{\"X-Api-Key\": \"...\"}'"
+        return "[error] headers_json must be a JSON object"
+
     try:
+        args = json.loads(args_json or "[]")
+    except json.JSONDecodeError as exc:
+        return f"[error] invalid args_json: {exc}"
+    if not isinstance(args, list):
+        return "[error] args_json must be a JSON array of strings"
+
+    if url:
+        if command or cwd or args:
+            return "[error] command/args_json/cwd are only valid for stdio MCP servers"
+        raw_cfg = {"transport": "streamable-http", "url": url, "headers": headers}
+    else:
+        if headers:
+            return "[error] headers_json is only valid for HTTP MCP servers"
+        raw_cfg = {"transport": "stdio", "command": command, "args": args, "cwd": cwd or WORKSPACE}
+
+    try:
+        cfg = _normalise_server_config(raw_cfg)
         with _dynamic_registry_lock():
-            # Mutations are strict: treating malformed JSON as an empty
-            # registry would report success while erasing every prior server.
             servers = _load_dynamic_servers(strict=True)
-            servers[name] = {"url": url, "headers": headers}
+            servers[name] = cfg
             _save_dynamic_servers(servers)
-    except Exception as e:
-        return f"[error] mcp_add_server failed to save '{name}': {e}"
-    return (
-        f"registered MCP server '{name}' -> {url}. "
-        f"Try mcp_list_tools(server='{name}') to confirm it connects."
-    )
+    except Exception as exc:
+        return f"[error] mcp_add_server failed to save '{name}': {exc}"
+
+    target = cfg["url"] if cfg["transport"] == "streamable-http" else f"stdio:{cfg['command']}"
+    return f"registered MCP server '{name}' -> {target}. Try mcp_list_tools(server='{name}') to confirm it connects."
 
 
 @tool
 def mcp_remove_server(name: str) -> str:
-    """Remove a previously self-registered MCP server (one added via mcp_add_server).
-    Only removes entries from the workspace registry — has no effect on a server
-    hardcoded in config.MCP_SERVERS (that requires a developer to edit config.py).
-    Args:
-        name: the server name to remove, exactly as passed to mcp_add_server"""
+    """Remove a self-registered MCP server from the project-local registry."""
     name = (name or "").strip()
     if not name:
         return "[error] name is required"
@@ -227,6 +348,6 @@ def mcp_remove_server(name: str) -> str:
                 return f"[error] no self-registered MCP server named '{name}' — known: {known}"
             del servers[name]
             _save_dynamic_servers(servers)
-    except Exception as e:
-        return f"[error] mcp_remove_server failed for '{name}': {e}"
-    return f"removed MCP server '{name}' from the workspace registry."
+    except Exception as exc:
+        return f"[error] mcp_remove_server failed for '{name}': {exc}"
+    return f"removed MCP server '{name}' from the project-local registry."
