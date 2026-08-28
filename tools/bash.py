@@ -24,7 +24,12 @@ def _classify_bash_error(returncode: int, stderr: str, command: str, workspace: 
     return None
 
 
-def _build_sandbox_profile(workspace: str, extra_write_paths: tuple[str, ...] = ()) -> str:
+def _build_sandbox_profile(
+    workspace: str,
+    extra_write_paths: tuple[str, ...] = (),
+    extra_read_paths: tuple[str, ...] = (),
+    extra_unlink_paths: tuple[str, ...] = (),
+) -> str:
     """สร้าง macOS sandbox-exec profile — allow default, deny writes นอก workspace
 
     extra_write_paths: subpath เพิ่มที่อนุญาตให้เขียน (เช่น skills/ สำหรับ python_exec)
@@ -32,6 +37,8 @@ def _build_sandbox_profile(workspace: str, extra_write_paths: tuple[str, ...] = 
     """
     home = os.path.expanduser("~")
     extra = "".join(f' (subpath "{os.path.realpath(p)}")' for p in extra_write_paths)
+    extra_read = "".join(f' (subpath "{os.path.realpath(p)}")' for p in extra_read_paths)
+    extra_unlink = "".join(f' (subpath "{os.path.realpath(p)}")' for p in extra_unlink_paths)
     return f"""(version 1)
 (allow default)
 
@@ -59,11 +66,14 @@ def _build_sandbox_profile(workspace: str, extra_write_paths: tuple[str, ...] = 
 
 ; workspace + /tmp + extra — allow ทีหลัง (last-match wins) override deny Desktop
 (allow file-write* (subpath "{workspace}") (subpath "/private/tmp"){extra})
-(allow file-read*  (subpath "{workspace}"))
+(allow file-read*  (subpath "{workspace}"){extra_read})
 
 ; The workspace may be edited, but files must never be removed by shell/Python tools.
 ; Keep this after the workspace allow rule so it takes precedence there too.
 (deny file-write-unlink (subpath "{workspace}"))
+
+; Guarded capabilities may opt into unlink/rename for narrowly-scoped metadata paths.
+{f'(allow file-write-unlink{extra_unlink})' if extra_unlink else ''}
 """
 
 

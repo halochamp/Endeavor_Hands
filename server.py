@@ -1,6 +1,6 @@
 """server.py — Endeavor Hands' MCP entry point.
 
-Exposes local-machine tools (bash, bash_bg, python_exec, read_file, write_file,
+Exposes local-machine tools (bash, git, bash_bg, python_exec, read_file, write_file,
 edit, computer, and the mcp_* bridge) to an MCP client over stdio — designed for
 ChatGPT web via OpenAI Secure MCP Tunnel (see README.md's "Connect this server
 to ChatGPT" section), but works with any MCP client (Claude Desktop,
@@ -30,6 +30,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from agent_log import AgentLogger
 
 from tools.bash import _bash_impl
+from tools.git import _git_impl
 from tools.python_exec import _python_exec_impl
 from tools.read_file import _IMAGE_EXT, _read_file_impl
 from tools.computer_use import _computer_impl, pop_last_image_path
@@ -89,8 +90,8 @@ mcp = FastMCP(
 When the user asks to inspect, search, create, modify, test, build, run, or otherwise work with files,
 projects, processes, or apps on their computer, use the Endeavor tools instead of only describing how to
 do the task. Use read_file for text files and local images, write_file for new or complete files, edit for
-existing files, bash for searches, git, tests, builds, and short commands, python_exec for Python analysis, and
-computer for visible Mac app interaction. The workspace is the user's Desktop.
+existing files, bash for searches/tests/builds/short commands, git for guarded repository operations,
+python_exec for Python analysis, and computer for visible Mac app interaction. The workspace is the user's Desktop.
 
 For read-only requests, do not modify files. For requested changes, work only within the user's stated
 scope, verify relevant results with an appropriate Endeavor tool, and report the files changed. Files may
@@ -140,6 +141,43 @@ def bash(command: str, timeout: int = 30) -> str:
     whose path is in the leading "[bash] truncated: ..." marker.
     """
     return _bash_impl(command, timeout)
+
+
+# ── git ─────────────────────────────────────────────────────────────────────
+@mcp.tool()
+@_logged("git")
+def git(
+    action: str,
+    repo: str = ".",
+    paths: list[str] | None = None,
+    message: str = "",
+    remote: str = "origin",
+    branch: str = "",
+    staged: bool = False,
+    timeout: int = 60,
+) -> str:
+    """Guarded Git operations for repositories inside the approved workspace.
+
+    Use this instead of bash for Git mutation. Supported actions: status, diff, add, commit, push.
+    `add` requires explicit paths; `commit` commits only already-staged changes; `push` uses an
+    existing configured remote and never force-pushes. Git hooks and commit signing are disabled
+    for guarded commits so repository code cannot escape the intended operation. A confirmed stale
+    zero-byte `.git/index.lock` may be moved to a timestamped backup when no writer owns it.
+
+    Mutation actions should only be used when the user explicitly asked for the corresponding Git
+    change. Source-file deletion remains blocked; the extra unlink permission is scoped only to the
+    selected repository's Git metadata directory.
+    """
+    return _git_impl(
+        action=action,
+        repo=repo,
+        paths=paths,
+        message=message,
+        remote=remote,
+        branch=branch,
+        staged=staged,
+        timeout=timeout,
+    )
 
 
 # ── bash_bg ─────────────────────────────────────────────────────────────────

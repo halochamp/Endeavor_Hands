@@ -26,7 +26,8 @@ choices, increase tool-selection ambiguity, and spend model attention deciding
 simpler mental model:
 
 - need to inspect local content → `read_file`
-- need to search, run Git, execute tests, or inspect the system → `bash`
+- need to search, execute tests, or inspect the system → `bash`
+- need guarded repository operations → `git`
 - need to modify an existing file → `edit`
 - need to create or replace a complete file → `write_file`
 - need numerical/data analysis → `python_exec`
@@ -52,7 +53,7 @@ flowchart LR
     A["ChatGPT Web<br/>(Developer-mode app)"] -->|HTTPS, outbound only| B["OpenAI Secure<br/>MCP Tunnel"]
     B --> C["tunnel-client<br/>(runs on your Mac)"]
     C -->|stdio, no network port| D["server.py<br/>(this repo)"]
-    D --> E["bash / bash_bg /<br/>python_exec"]
+    D --> E["bash / bash_bg /<br/>python_exec / git"]
     D --> F["read_file / write_file /<br/>edit"]
     D --> G["computer"]
     D --> H["mcp_* bridge"]
@@ -70,13 +71,14 @@ the same way, without the tunnel, if it can spawn the process directly.
 
 ## Tools
 
-The server exposes 11 MCP tools. Every tool that can change something on
+The server exposes 12 MCP tools. Every tool that can change something on
 disk or on screen has a guardrail next to it — see `SECURITY.md` for the
 full detail behind each one.
 
 | Tool | What it does | Guardrail |
 |---|---|---|
 | `bash` | Run a shell command | Runs inside a sandbox profile scoped to the workspace; file-deletion commands are refused |
+| `git` | Guarded repository operations (`status`, `diff`, explicit-path `add`, `commit`, non-force `push`) | Repository must be inside the approved workspace; mutation is scoped to Git metadata; hooks/signing and unsafe transports are disabled |
 | `bash_bg` | Start/poll/kill a background shell job | Same sandbox as `bash` |
 | `python_exec` | Run Python code with the server's own interpreter | Same sandbox as `bash` |
 | `read_file` | Read text, code, PDF/Word/Excel, images, audio/video | Reads anywhere except a fixed list of protected system/credential paths |
@@ -311,7 +313,8 @@ Endeavor Hands ตั้งใจให้ core tool มีจำนวนน้
 ที่ต้องแก้จริง Endeavor Hands จึงพยายามรักษา mental model ให้เรียบง่าย:
 
 - ต้องอ่านหรือทำความเข้าใจเนื้อหาในเครื่อง → `read_file`
-- ต้องค้นหา, ใช้ Git, รัน test หรือคำสั่งระบบ → `bash`
+- ต้องค้นหา, รัน test หรือคำสั่งระบบ → `bash`
+- ต้องทำงานกับ repository แบบมี guardrail → `git`
 - ต้องแก้ไฟล์เดิมเฉพาะจุด → `edit`
 - ต้องสร้างหรือแทนที่ไฟล์ทั้งไฟล์ → `write_file`
 - ต้องวิเคราะห์ข้อมูลหรือตัวเลข → `python_exec`
@@ -334,7 +337,7 @@ flowchart LR
     A["ChatGPT Web<br/>(Developer-mode app)"] -->|HTTPS ขาออกเท่านั้น| B["OpenAI Secure<br/>MCP Tunnel"]
     B --> C["tunnel-client<br/>(รันบน Mac ของคุณ)"]
     C -->|stdio ไม่เปิดพอร์ตเครือข่าย| D["server.py<br/>(repo นี้)"]
-    D --> E["bash / bash_bg /<br/>python_exec"]
+    D --> E["bash / bash_bg /<br/>python_exec / git"]
     D --> F["read_file / write_file /<br/>edit"]
     D --> G["computer"]
     D --> H["mcp_* bridge"]
@@ -352,12 +355,13 @@ Codex CLI, ...) ก็คุยกับ `server.py` แบบเดียวก
 
 ## รายการ Tools
 
-Server เปิด MCP tool 11 ตัว ทุกตัวที่แก้ไขไฟล์หรือหน้าจอได้จะมี guardrail
+Server เปิด MCP tool 12 ตัว ทุกตัวที่แก้ไขไฟล์หรือหน้าจอได้จะมี guardrail
 กำกับไว้ — ดูรายละเอียดเต็มของแต่ละอันได้ที่ `SECURITY.md`
 
 | Tool | ทำอะไร | Guardrail |
 |---|---|---|
 | `bash` | รันคำสั่ง shell | รันใน sandbox profile จำกัดใน workspace; คำสั่งลบไฟล์ถูกปฏิเสธ |
+| `git` | ทำงานกับ repository แบบ guarded (`status`, `diff`, `add` ระบุ path, `commit`, `push` แบบไม่ force) | repo ต้องอยู่ใน workspace ที่อนุมัติ; สิทธิ์ mutation จำกัดที่ Git metadata; ปิด hook/signing และ transport ที่ไม่ปลอดภัย |
 | `bash_bg` | เริ่ม/ตรวจสอบ/ปิด background job | sandbox เดียวกับ `bash` |
 | `python_exec` | รัน Python ด้วย interpreter ของ server เอง | sandbox เดียวกับ `bash` |
 | `read_file` | อ่านข้อความ, โค้ด, PDF/Word/Excel, รูปภาพ, เสียง/วิดีโอ | อ่านได้ทุกที่ ยกเว้น path ระบบ/credential ที่กำหนดไว้ตายตัว |
