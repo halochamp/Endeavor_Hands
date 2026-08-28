@@ -1,4 +1,4 @@
-# ENDEAVOR_AGENT_CHATGPT
+# Endeavor Hands
 
 **English** | [ภาษาไทย](#ภาษาไทย)
 
@@ -90,8 +90,8 @@ by the per-folder permission gate), is in [SECURITY.md](SECURITY.md).
 Requires macOS on Apple Silicon and Python 3.11.
 
 ```bash
-git clone https://github.com/halochamp/ENDEAVOR_AGENT_CHATGPT.git
-cd ENDEAVOR_AGENT_CHATGPT
+git clone https://github.com/halochamp/Endeavor_Hands.git
+cd Endeavor_Hands
 bash install_library/install.sh
 ```
 
@@ -106,7 +106,7 @@ those specific optional features — the core server still runs.
 ## Run locally
 
 ```bash
-cd ENDEAVOR_AGENT_CHATGPT
+cd Endeavor_Hands
 source .venv/bin/activate
 python3 server.py
 ```
@@ -120,9 +120,9 @@ Use a stdio MCP-server configuration with this command and no arguments —
 substitute the absolute path to where you cloned this repo:
 
 ```text
-command: /absolute/path/to/ENDEAVOR_AGENT_CHATGPT/.venv/bin/python3
+command: /absolute/path/to/Endeavor_Hands/.venv/bin/python3
 args:
-  - /absolute/path/to/ENDEAVOR_AGENT_CHATGPT/server.py
+  - /absolute/path/to/Endeavor_Hands/server.py
 ```
 
 For example, a JSON-style client configuration is:
@@ -130,10 +130,10 @@ For example, a JSON-style client configuration is:
 ```json
 {
   "mcpServers": {
-    "endeavor-chatgpt": {
-      "command": "/absolute/path/to/ENDEAVOR_AGENT_CHATGPT/.venv/bin/python3",
+    "endeavor-hands": {
+      "command": "/absolute/path/to/Endeavor_Hands/.venv/bin/python3",
       "args": [
-        "/absolute/path/to/ENDEAVOR_AGENT_CHATGPT/server.py"
+        "/absolute/path/to/Endeavor_Hands/server.py"
       ]
     }
   }
@@ -173,7 +173,7 @@ This section is the full walkthrough end to end — for the Thai version see
    key without saving either credential to disk:
 
    ```bash
-   cd ENDEAVOR_AGENT_CHATGPT
+   cd Endeavor_Hands
    ./start_tunnel.sh
    ```
 
@@ -252,7 +252,7 @@ MIT — see [LICENSE](LICENSE).
 
 # ภาษาไทย
 
-[English](#endeavor_agent_chatgpt)
+[English](#endeavor-hands)
 
 **โควต้าแยกจาก Codex.** การแชทกับ ChatGPT นับโควต้า/rate limit แยกต่างหากจาก
 OpenAI Codex (coding agent) โดยสิ้นเชิง เมื่อ Codex ติด rate limit หรือ
@@ -336,8 +336,8 @@ permission gate ต่อโฟลเดอร์) อยู่ที่ [SECURI
 ต้องการ macOS บน Apple Silicon และ Python 3.11
 
 ```bash
-git clone https://github.com/halochamp/ENDEAVOR_AGENT_CHATGPT.git
-cd ENDEAVOR_AGENT_CHATGPT
+git clone https://github.com/halochamp/Endeavor_Hands.git
+cd Endeavor_Hands
 bash install_library/install.sh
 ```
 
@@ -352,7 +352,7 @@ hash ไว้จาก `requirements.txt` (`mcp`, `langchain-core`, `opencv-pyt
 ## รันในเครื่อง
 
 ```bash
-cd ENDEAVOR_AGENT_CHATGPT
+cd Endeavor_Hands
 source .venv/bin/activate
 python3 server.py
 ```
@@ -366,9 +366,9 @@ Server สื่อสารผ่าน standard input/output ให้ปล�
 แทนที่ path ด้วย path จริงที่คุณ clone repo นี้ไว้:
 
 ```text
-command: /absolute/path/to/ENDEAVOR_AGENT_CHATGPT/.venv/bin/python3
+command: /absolute/path/to/Endeavor_Hands/.venv/bin/python3
 args:
-  - /absolute/path/to/ENDEAVOR_AGENT_CHATGPT/server.py
+  - /absolute/path/to/Endeavor_Hands/server.py
 ```
 
 ตัวอย่าง config แบบ JSON:
@@ -376,10 +376,10 @@ args:
 ```json
 {
   "mcpServers": {
-    "endeavor-chatgpt": {
-      "command": "/absolute/path/to/ENDEAVOR_AGENT_CHATGPT/.venv/bin/python3",
+    "endeavor-hands": {
+      "command": "/absolute/path/to/Endeavor_Hands/.venv/bin/python3",
       "args": [
-        "/absolute/path/to/ENDEAVOR_AGENT_CHATGPT/server.py"
+        "/absolute/path/to/Endeavor_Hands/server.py"
       ]
     }
   }
@@ -419,7 +419,7 @@ ChatGPT web ต้องใช้ tunnel เพราะเชื่อมต่
    ทั้งคู่ลงดิสก์เลย:
 
    ```bash
-   cd ENDEAVOR_AGENT_CHATGPT
+   cd Endeavor_Hands
    ./start_tunnel.sh
    ```
 

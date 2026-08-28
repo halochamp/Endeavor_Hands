@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install ENDEAVOR_AGENT_CHATGPT into a project-local Python 3.11 virtual env.
+# Install Endeavor Hands into a project-local Python 3.11 virtual env.
 #
 # Usage:
 #   bash install_library/install.sh
@@ -17,12 +17,12 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV_DIR="$PROJECT_DIR/.venv"
 PYTHON_BIN="${PYTHON_BIN:-python3.11}"
 
-echo "=== ENDEAVOR_AGENT_CHATGPT installer ==="
+echo "=== Endeavor Hands installer ==="
 echo
 
 echo "[1/4] Checking platform"
 if [[ "$(uname -s)" != "Darwin" ]]; then
-  echo "[error] ENDEAVOR_AGENT_CHATGPT requires macOS (computer/read_file rely on macOS frameworks)."
+  echo "[error] Endeavor Hands requires macOS (computer/read_file rely on macOS frameworks)."
   exit 1
 fi
 if [[ "$(uname -m)" != "arm64" ]]; then

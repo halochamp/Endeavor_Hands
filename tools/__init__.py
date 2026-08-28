@@ -1,4 +1,4 @@
-"""tools — local capability primitives for ENDEAVOR_AGENT_CHATGPT.
+"""tools — local capability primitives for Endeavor Hands.
 
 No re-exports here on purpose: the old ALL_TOOLS/SKILL_TOOLS/HANDOFF_TOOLSETS
 registries existed for the LangGraph orchestrator (main.py/graph.py), which is

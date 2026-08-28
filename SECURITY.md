@@ -2,7 +2,7 @@
 
 **English** | [ภาษาไทย](#ภาษาไทย)
 
-ENDEAVOR_AGENT_CHATGPT gives an MCP client (ChatGPT web, via the OpenAI
+Endeavor Hands gives an MCP client (ChatGPT web, via the OpenAI
 Secure MCP Tunnel, or any other MCP client) real capability on this Mac:
 shell commands, Python execution, file read/write/edit, and guarded
 screen/mouse/keyboard control. Do not report suspected vulnerabilities in a
@@ -69,7 +69,7 @@ a multi-tenant security boundary.
 
 [English](#security-policy)
 
-ENDEAVOR_AGENT_CHATGPT ให้ MCP client (ChatGPT web ผ่าน OpenAI Secure MCP
+Endeavor Hands ให้ MCP client (ChatGPT web ผ่าน OpenAI Secure MCP
 Tunnel หรือ MCP client อื่นใด) มีความสามารถจริงบนเครื่อง Mac นี้: รันคำสั่ง
 shell, รัน Python, อ่าน/เขียน/แก้ไฟล์, และควบคุมหน้าจอ/เมาส์/คีย์บอร์ดแบบ
 มีการ์ด อย่ารายงานช่องโหว่ที่สงสัยผ่าน public issue

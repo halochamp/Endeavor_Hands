@@ -1,6 +1,6 @@
-# คู่มือตั้งค่า ChatGPT ให้ใช้งาน Endeavor บน Mac
+# คู่มือตั้งค่า ChatGPT ให้ใช้งาน Endeavor Hands บน Mac
 
-เอกสารนี้อธิบายการเชื่อม ChatGPT Web เข้ากับ `ENDEAVOR_AGENT_CHATGPT` ที่รันอยู่บน Mac เครื่องนี้ เพื่อให้ ChatGPT อ่านไฟล์, สร้าง/แก้ไฟล์, รันคำสั่ง, ตรวจ test/Git, อ่านภาพ และควบคุมแอปบน Mac ได้ผ่าน OpenAI Secure MCP Tunnel
+เอกสารนี้อธิบายการเชื่อม ChatGPT Web เข้ากับ `Endeavor_Hands` ที่รันอยู่บน Mac เครื่องนี้ เพื่อให้ ChatGPT อ่านไฟล์, สร้าง/แก้ไฟล์, รันคำสั่ง, ตรวจ test/Git, อ่านภาพ และควบคุมแอปบน Mac ได้ผ่าน OpenAI Secure MCP Tunnel
 
 > ขอบเขตปัจจุบัน: ChatGPT ทำงานกับไฟล์บน `~/Desktop` ได้ แต่ระบบไม่อนุญาตให้ลบไฟล์
 
@@ -11,7 +11,7 @@ ChatGPT Web
   → Developer-mode app
   → OpenAI-hosted Secure MCP Tunnel
   → tunnel-client บน Mac
-  → ENDEAVOR_AGENT_CHATGPT/server.py
+  → Endeavor_Hands/server.py
   → ไฟล์ / คำสั่ง / แอปบน Mac
 ```
 
@@ -35,7 +35,7 @@ Tunnel เป็นการเชื่อมต่อ HTTPS ขาออกจ
 
 5. ใช้ ChatGPT **บนเว็บ** สำหรับการสร้างและใช้งาน Developer-mode app
 
-## เปิด Endeavor Tunnel
+## เปิด Endeavor Hands Tunnel
 
 ### ครั้งแรก
 
@@ -54,7 +54,7 @@ Tunnel เป็นการเชื่อมต่อ HTTPS ขาออกจ
 
 ดับเบิลคลิกไฟล์เดิมได้เลย launcher จะอ่าน key จาก Keychain และเริ่ม tunnel ให้โดยไม่ถาม key อีก
 
-**ต้องปล่อยหน้าต่าง Terminal นี้เปิดค้างไว้** ระหว่างที่ต้องการให้ ChatGPT เรียก Endeavor ได้
+**ต้องปล่อยหน้าต่าง Terminal นี้เปิดค้างไว้** ระหว่างที่ต้องการให้ ChatGPT เรียก Endeavor Hands ได้
 
 ### ตรวจสถานะ
 
@@ -68,7 +68,7 @@ http://127.0.0.1:8765/ui
 
 > พอร์ต 8765 เป็นค่า default ของ tunnel-client เอง — ถ้าเครื่องคุณมีโปรแกรมอื่นใช้พอร์ตนี้อยู่แล้ว ให้เปลี่ยน `listen_addr` ในไฟล์ profile ของ tunnel-client เป็นพอร์ตว่าง แล้วแก้ `STATUS_URL` ใน `scripts/start_tunnel.command` ให้ตรงกัน
 
-## เพิ่ม Endeavor เข้า ChatGPT
+## เพิ่ม Endeavor Hands เข้า ChatGPT
 
 1. เปิด ChatGPT Web ใน workspace เดียวกับที่ associate tunnel ไว้
 2. เข้า **Plugins** หรือ **Apps** (ชื่อหน้าจออาจต่างกันตามการ rollout)
@@ -79,7 +79,7 @@ http://127.0.0.1:8765/ui
    หากไม่พบในรายการ ให้ใส่ Tunnel ID ของคุณเองแทน
 
 6. กด **Scan Tools** แล้วสร้าง app
-7. เปิดแชตใหม่ เลือก Endeavor จากเมนู Tools หรือเรียกด้วย `@ชื่อแอป`
+7. เปิดแชตใหม่ เลือก Endeavor Hands จากเมนู Tools หรือเรียกด้วย `@ชื่อแอป`
 
 ไม่ต้องใส่ URL local `127.0.0.1:8765` และไม่ต้องใส่ URL `https://api.openai.com/v1/tunnel/...` ในช่อง endpoint ของ ChatGPT — ให้เลือก **Tunnel** และเลือก Tunnel ID เท่านั้น
 
@@ -103,7 +103,7 @@ http://127.0.0.1:8765/ui
 ใช้ `read_file` โดยตรงสำหรับ PNG, JPG/JPEG, GIF, BMP, WebP, HEIC/HEIF และ TIFF เช่น:
 
 ```text
-ใช้ Endeavor อ่าน ~/Desktop/screenshot.png แล้วอธิบายภาพ
+ใช้ Endeavor Hands อ่าน ~/Desktop/screenshot.png แล้วอธิบายภาพ
 ```
 
 รูปจะถูกแปลงเป็น PNG และส่งเข้า ChatGPT เพื่อวิเคราะห์โดยตรง
@@ -124,14 +124,14 @@ http://127.0.0.1:8765/ui
 ### อ่านอย่างเดียว
 
 ```text
-ใช้ Endeavor ตรวจโครงสร้างโปรเจกต์ ~/Desktop/my-project
+ใช้ Endeavor Hands ตรวจโครงสร้างโปรเจกต์ ~/Desktop/my-project
 ห้ามแก้ไขไฟล์ และสรุปไฟล์สำคัญพร้อมจุดเริ่มต้นของโปรเจกต์
 ```
 
 ### แก้โค้ดอย่างปลอดภัย
 
 ```text
-ใช้ Endeavor อ่านไฟล์ ~/Desktop/my-project/src/app.py
+ใช้ Endeavor Hands อ่านไฟล์ ~/Desktop/my-project/src/app.py
 แก้เฉพาะส่วนที่ทำให้ฟังก์ชัน login validation ผิดพลาด
 จากนั้นรัน test ที่เกี่ยวข้องและแสดง git diff สรุปก่อนจบ
 ห้ามลบไฟล์ใด ๆ
@@ -140,14 +140,14 @@ http://127.0.0.1:8765/ui
 ### สร้างไฟล์ใหม่
 
 ```text
-ใช้ Endeavor สร้าง ~/Desktop/my-project/docs/setup.md
+ใช้ Endeavor Hands สร้าง ~/Desktop/my-project/docs/setup.md
 อธิบายวิธีติดตั้งและรันโปรเจกต์จาก README เดิม
 ```
 
 ### ตรวจภาพหรือ UI mockup
 
 ```text
-ใช้ Endeavor อ่าน ~/Desktop/mockup.png
+ใช้ Endeavor Hands อ่าน ~/Desktop/mockup.png
 วิเคราะห์ลำดับชั้นของหน้าจอและเสนอจุดที่ควรปรับ
 ```
 
@@ -162,7 +162,7 @@ http://127.0.0.1:8765/ui
 
 ## เมื่อแก้โค้ดของ MCP Server เอง
 
-หลังแก้ไฟล์ใต้ `ENDEAVOR_AGENT_CHATGPT` เช่น `server.py` หรือไฟล์ใน `tools/` ให้:
+หลังแก้ไฟล์ใต้ `Endeavor_Hands` เช่น `server.py` หรือไฟล์ใน `tools/` ให้:
 
 1. ปิด Terminal ที่รัน tunnel เดิม
 2. เปิด `scripts/start_tunnel.command` ใหม่
@@ -185,7 +185,7 @@ http://127.0.0.1:8765/ui
 
 - [ ] Terminal launcher แสดงว่า tunnel-client เริ่มทำงานแล้ว
 - [ ] `http://127.0.0.1:8765/readyz` ตอบ `ready`
-- [ ] Endeavor app ถูกเลือกใน ChatGPT Web
+- [ ] Endeavor Hands app ถูกเลือกใน ChatGPT Web
 - [ ] เริ่มแชตใหม่ก่อนงานที่ต้องเรียก tool
 - [ ] ระบุ path และขอบเขตการแก้ไขให้ชัด
 - [ ] สั่งให้รัน test และสรุป `git diff` หลังแก้โค้ดสำคัญ

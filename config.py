@@ -1,4 +1,4 @@
-"""config.py — ENDEAVOR_AGENT_CHATGPT configuration
+"""config.py — Endeavor Hands configuration
 
 This server has no local LLM, no web tools, no RAG, no multi-user identity
 mapping, and no LangGraph orchestration — ChatGPT (or another MCP client) is

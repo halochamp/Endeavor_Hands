@@ -55,7 +55,7 @@ _INFO_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>NSSpeechRecognitionUsageDescription</key>
-    <string>Transcribe local audio/video files for ENDEAVOR_AGENT_CHATGPT</string>
+    <string>Transcribe local audio/video files for Endeavor Hands</string>
 </dict>
 </plist>
 """

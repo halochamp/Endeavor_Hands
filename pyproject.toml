@@ -1,5 +1,5 @@
 [project]
-name = "endeavor-agent-chatgpt"
+name = "endeavor-hands"
 version = "0.1.0"
 description = "Local macOS MCP stdio server that lets ChatGPT (or any MCP client) run shell/Python, read/write/edit files, and drive guarded screen automation on this Mac"
 readme = "README.md"

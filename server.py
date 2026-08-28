@@ -1,4 +1,4 @@
-"""server.py — ENDEAVOR_AGENT_CHATGPT's MCP entry point.
+"""server.py — Endeavor Hands' MCP entry point.
 
 Exposes local-machine tools (bash, bash_bg, python_exec, read_file, write_file,
 edit, computer, and the mcp_* bridge) to an MCP client over stdio — designed for
@@ -83,7 +83,7 @@ def _logged(name: str):
 
 
 mcp = FastMCP(
-    "ENDEAVOR_AGENT_CHATGPT",
+	"Endeavor Hands",
     instructions="""You are connected to Endeavor, the user's local Mac workspace assistant.
 
 When the user asks to inspect, search, create, modify, test, build, run, or otherwise work with files,

@@ -22,7 +22,7 @@ STATUS_URL="http://127.0.0.1:8765"
 }
 
 if /usr/bin/curl --fail --silent --max-time 1 "$STATUS_URL/readyz" >/dev/null; then
-  print "The endeavor-chatgpt tunnel is already running."
+  print "The Endeavor Hands tunnel is already running."
   open "$STATUS_URL/ui"
   exit 0
 fi
@@ -50,5 +50,5 @@ export CONTROL_PLANE_API_KEY
 export V2_WORKSPACE="$WORKSPACE_DIR"
 # File removal is forbidden even within the writable workspace.
 export V2_DENY_FILE_DELETION=1
-print "Starting endeavor-chatgpt tunnel. Keep this Terminal window open."
+print "Starting Endeavor Hands tunnel. Keep this Terminal window open."
 exec "$TUNNEL_CLIENT" run --profile "$PROFILE_NAME" --mcp.connection-max-ttl 168h0m0s

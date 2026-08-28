@@ -219,7 +219,7 @@ wheels = [
 ]
 
 [[package]]
-name = "endeavor-agent-chatgpt"
+name = "endeavor-hands"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
