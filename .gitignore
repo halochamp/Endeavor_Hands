@@ -11,6 +11,7 @@ htmlcov/
 # Local runtime output
 logs/
 workspace/
+work/
 
 # Project-local virtual environment (created by install_library/install.sh)
 .venv/

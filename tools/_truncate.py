@@ -9,6 +9,13 @@ import uuid
 from pathlib import Path
 
 
+# Recovery files are runtime scratch artifacts, not user workspace content.
+# Keep them under the Endeavor Hands project root so a broad WORKSPACE such as
+# ~/Desktop never scatters _bash_output/_git_output/_python_exec_output files
+# across the user's desktop.
+_WORK_DIR = Path(__file__).resolve().parents[1] / "work"
+
+
 def truncate_with_save(
     out: str,
     max_chars: int,
@@ -19,8 +26,11 @@ def truncate_with_save(
     file_prefix: str | None = None,
     keep_tail: bool = False,
 ) -> str:
-    """Cut `out` to `max_chars` and save the full untruncated text to a workspace
-    recovery file, noting its path in the marker.
+    """Cut `out` to `max_chars` and save the full untruncated text under the
+    Endeavor Hands root `work/` directory, noting its path in the marker.
+
+    `workspace` remains in the signature for compatibility with existing callers;
+    recovery-file placement no longer follows it.
 
     `marker_first`: put the marker BEFORE the cut content instead of after.
     Use this when a caller may apply its own secondary hard cut on top of this
@@ -41,7 +51,8 @@ def truncate_with_save(
     saved_path = ""
     prefix = file_prefix or f"_{tool_name}_output"
     try:
-        save_to = Path(workspace) / f"{prefix}_{uuid.uuid4().hex[:8]}.txt"
+        _WORK_DIR.mkdir(parents=True, exist_ok=True)
+        save_to = _WORK_DIR / f"{prefix}_{uuid.uuid4().hex[:8]}.txt"
         save_to.write_text(out, encoding="utf-8")
         saved_path = str(save_to)
     except Exception:
