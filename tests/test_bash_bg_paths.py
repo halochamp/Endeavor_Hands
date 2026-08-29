@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import config
 from tools import bash_bg
+from tools._sandbox import DirectExecTestBackend
 
 
 class BashBackgroundPathTests(unittest.TestCase):
@@ -22,8 +23,10 @@ class BashBackgroundPathTests(unittest.TestCase):
         self.work_dir = self.workspace / "work"
         self._old_workspace = config.WORKSPACE
         self._old_work_dir = bash_bg._WORK_DIR
+        self._old_backend = bash_bg._SANDBOX_BACKEND
         config.WORKSPACE = str(self.workspace)
         bash_bg._WORK_DIR = self.work_dir
+        bash_bg._SANDBOX_BACKEND = DirectExecTestBackend()
 
     def tearDown(self) -> None:
         for proc in list(bash_bg._PROCS.values()):
@@ -37,6 +40,7 @@ class BashBackgroundPathTests(unittest.TestCase):
         bash_bg._PROFILE_PATHS.clear()
         config.WORKSPACE = self._old_workspace
         bash_bg._WORK_DIR = self._old_work_dir
+        bash_bg._SANDBOX_BACKEND = self._old_backend
         self.temp.cleanup()
 
     def test_registry_and_background_log_live_under_work(self) -> None:

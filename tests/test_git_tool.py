@@ -14,6 +14,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 import config
 from tools.bash import _build_sandbox_profile
+from tools import git as git_tool
+from tools._sandbox import DirectExecTestBackend
 from tools.git import _git_impl, _git_profile, _https_basic_auth_env
 
 
@@ -25,6 +27,9 @@ class GuardedGitToolTests(unittest.TestCase):
         self.repo = self.workspace / "repo"
         self.repo.mkdir()
         config.WORKSPACE = str(self.workspace)
+        self._old_backend = git_tool._SANDBOX_BACKEND
+        self.test_backend = DirectExecTestBackend()
+        git_tool._SANDBOX_BACKEND = self.test_backend
 
         subprocess.run(["git", "init", str(self.repo)], check=True, capture_output=True, text=True)
         subprocess.run(
@@ -41,6 +46,7 @@ class GuardedGitToolTests(unittest.TestCase):
         )
 
     def tearDown(self) -> None:
+        git_tool._SANDBOX_BACKEND = self._old_backend
         config.WORKSPACE = self._old_workspace
         self.temp.cleanup()
 
@@ -54,21 +60,9 @@ class GuardedGitToolTests(unittest.TestCase):
         real_git_dir = os.path.realpath(git_dir)
         self.assertIn(f'(allow file-write-unlink (subpath "{real_git_dir}"))', profile)
 
-        source = self.repo / "keep.txt"
-        source.write_text("keep\n", encoding="utf-8")
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".sb", delete=False) as handle:
-            handle.write(profile)
-            profile_path = handle.name
-        try:
-            result = subprocess.run(
-                ["sandbox-exec", "-f", profile_path, "rm", str(source)],
-                capture_output=True,
-                text=True,
-            )
-        finally:
-            os.unlink(profile_path)
-        self.assertNotEqual(result.returncode, 0)
-        self.assertTrue(source.exists())
+        # Unit tests intentionally do not apply a second macOS sandbox when the
+        # suite is itself running under Hands. The one-layer real boundary is
+        # covered by scripts/verify_sandbox.command, intended for normal Terminal.
 
     def test_add_and_commit_can_update_git_metadata(self) -> None:
         source = self.repo / "tracked.txt"

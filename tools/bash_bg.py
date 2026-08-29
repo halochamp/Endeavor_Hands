@@ -12,13 +12,15 @@ import json
 import os
 import signal
 import subprocess
-import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from langchain_core.tools import tool
-from tools.bash import _build_sandbox_profile
+from tools._sandbox import RealSandboxBackend, build_sandbox_profile, cleanup_profile
+from tools._diagnostics import Diagnostic, append_diagnostic, classify_exception, flatten_exception
+
+_SANDBOX_BACKEND = RealSandboxBackend()
 
 _MAX_JOBS = 5
 _KILL_GRACE_SECONDS = 3
@@ -193,7 +195,10 @@ def bash_bg(action: str, command: str = "", job_id: str = "") -> str:
     """
     action = (action or "").strip().lower()
     if action not in {"start", "status", "list", "kill"}:
-        return "[error] action must be one of: start, status, list, kill"
+        return append_diagnostic(
+            "[error] action must be one of: start, status, list, kill",
+            Diagnostic("tool_validation", "tool", False),
+        )
 
     from config import WORKSPACE
     reg = _Registry()
@@ -210,7 +215,10 @@ def bash_bg(action: str, command: str = "", job_id: str = "") -> str:
 
     if action == "start":
         if not command:
-            return "[error] command is required for action=start"
+            return append_diagnostic(
+                "[error] command is required for action=start",
+                Diagnostic("tool_validation", "tool", False),
+            )
         spawned: list[tuple[str, subprocess.Popen]] = []
 
         def _start_under_lock(jobs):
@@ -223,26 +231,26 @@ def bash_bg(action: str, command: str = "", job_id: str = "") -> str:
             job_id = uuid.uuid4().hex[:8]
             _WORK_DIR.mkdir(parents=True, exist_ok=True)
             log_path = str(_WORK_DIR / f"_bash_bg_{job_id}.log")
-            profile = _build_sandbox_profile(WORKSPACE)
-            profile_fd, profile_path = tempfile.mkstemp(suffix=".sb")
+            profile = build_sandbox_profile(WORKSPACE)
+            profile_path: str | None = None
             try:
-                with os.fdopen(profile_fd, "w") as stream:
-                    stream.write(profile)
                 with open(log_path, "w", encoding="utf-8") as logf:
-                    proc = subprocess.Popen(
-                        ["sandbox-exec", "-f", profile_path, "bash", "-c", command],
+                    spawned_job = _SANDBOX_BACKEND.spawn(
+                        ["bash", "-c", command],
+                        profile=profile,
+                        profile_dir=_WORK_DIR,
                         stdout=logf, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
                         cwd=WORKSPACE,
                     )
+                    proc = spawned_job.process
+                    profile_path = spawned_job.profile_path
             except Exception as exc:
-                try:
-                    os.unlink(profile_path)
-                except OSError:
-                    pass
-                return {"error": f"failed to start: {exc}"}
+                cleanup_profile(profile_path)
+                return {"error": f"failed to start: {flatten_exception(exc)}", "exc": exc}
 
             _PROCS[job_id] = proc
-            _PROFILE_PATHS[job_id] = profile_path
+            if profile_path:
+                _PROFILE_PATHS[job_id] = profile_path
             spawned.append((job_id, proc))
             job = {
                 "id": job_id, "command": command, "pid": proc.pid,
@@ -274,25 +282,41 @@ def bash_bg(action: str, command: str = "", job_id: str = "") -> str:
             return (f"[error] {_MAX_JOBS} background jobs already running — "
                     f"kill one first (bash_bg(action='list') to see them)")
         if "error" in job:
-            return f"[error] {job['error']}"
+            exc = job.get("exc")
+            return append_diagnostic(
+                f"[error] {job['error']}",
+                classify_exception(exc, layer="process") if isinstance(exc, BaseException) else Diagnostic("process_exit_nonzero", "process", False),
+            )
         return (f"[bash_bg] started job {job['id']} (pid {job['pid']}) — log: {job['log']}\n"
                 f"Poll with bash_bg(action='status', job_id='{job['id']}')")
 
     # status / kill both need to find the job first
     if not job_id:
-        return f"[error] job_id is required for action={action}"
+        return append_diagnostic(
+            f"[error] job_id is required for action={action}",
+            Diagnostic("tool_validation", "tool", False),
+        )
     try:
         jobs = reg.mutate(lambda js: [_refresh_status(j) for j in js])
     except Exception as exc:
         return f"[error] background job registry unavailable: {exc}"
     job = next((j for j in jobs if j["id"] == job_id), None)
     if job is None:
-        return f"[error] unknown job_id: {job_id} — check bash_bg(action='list')"
+        return append_diagnostic(
+            f"[error] unknown job_id: {job_id} — check bash_bg(action='list')",
+            Diagnostic("tool_validation", "tool", False),
+        )
 
     if action == "status":
         tail = _tail(job["log"])
         exit_note = f" exit_code={job['exit_code']}" if job["status"] == "exited" else ""
-        return f"job {job['id']} [{job['status']}]{exit_note}\ncommand: {job['command']}\n--- log tail ---\n{tail}"
+        result = f"job {job['id']} [{job['status']}]{exit_note}\ncommand: {job['command']}\n--- log tail ---\n{tail}"
+        if job["status"] == "exited" and isinstance(job.get("exit_code"), int) and job["exit_code"] != 0:
+            result = append_diagnostic(
+                result,
+                Diagnostic("process_exit_nonzero", "process", False, exit_code=job["exit_code"]),
+            )
+        return result
 
     # kill — only ever signal a pid we can verify is still the process we started.
     # The `_refresh_status()` call above (shared with `status`) already enforces this:

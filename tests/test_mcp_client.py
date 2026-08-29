@@ -13,6 +13,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from tools import mcp_client
+from tools._sandbox import DirectExecTestBackend
 
 
 class MCPClientTests(unittest.TestCase):
@@ -55,21 +56,11 @@ class MCPClientTests(unittest.TestCase):
 
         # This suite itself is often launched through Hands' bash sandbox. macOS
         # refuses applying another sandbox profile from the MCP worker thread, so
-        # use a tiny test-only argv wrapper that consumes `-f <profile>` and execs
-        # the real command. Production `_SANDBOX_EXEC` remains sandbox-exec.
-        wrapper = self.workspace / "sandbox_exec_test_wrapper.py"
-        wrapper.write_text(
-            "#!/usr/bin/env python3\n"
-            "import os, sys\n"
-            "args = sys.argv[1:]\n"
-            "if len(args) < 3 or args[0] != '-f':\n"
-            "    raise SystemExit(64)\n"
-            "os.execv(args[2], args[2:])\n",
-            encoding="utf-8",
-        )
-        wrapper.chmod(0o700)
-        old_sandbox_exec = mcp_client._SANDBOX_EXEC
-        mcp_client._SANDBOX_EXEC = str(wrapper)
+        # inject the explicit test backend. Production always uses RealSandboxBackend;
+        # there is no environment-variable or auto-detected unsandboxed fallback.
+        old_backend = mcp_client._SANDBOX_BACKEND
+        test_backend = DirectExecTestBackend()
+        mcp_client._SANDBOX_BACKEND = test_backend
         try:
             registered = mcp_client.mcp_add_server.func(
                 name="fake",
@@ -93,7 +84,10 @@ class MCPClientTests(unittest.TestCase):
             self.assertIn("ping", listed)
             self.assertEqual(called, "pong:hello")
         finally:
-            mcp_client._SANDBOX_EXEC = old_sandbox_exec
+            mcp_client._SANDBOX_BACKEND = old_backend
+
+        self.assertTrue(test_backend.prepared_argv)
+        self.assertFalse(any("sandbox-exec" in arg for call in test_backend.prepared_argv for arg in call))
 
     def test_stdio_rejects_relative_command_and_cwd_outside_workspace(self) -> None:
         with self.assertRaisesRegex(ValueError, "absolute executable path"):

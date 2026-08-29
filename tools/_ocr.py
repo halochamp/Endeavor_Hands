@@ -37,6 +37,7 @@ def _ensure_binary() -> bool:
                 subprocess.run(
                     ["swiftc", "-O", str(_SRC), "-o", str(_BIN)],
                     check=True, capture_output=True, timeout=120,
+                    stdin=subprocess.DEVNULL,
                 )
             _compiled = _BIN.exists()
         except Exception as e:
@@ -58,6 +59,7 @@ def read_layout(image_path: str) -> list[dict]:
         out = subprocess.run(
             [str(_BIN), image_path],
             capture_output=True, text=True, timeout=15,
+            stdin=subprocess.DEVNULL,
         )
         raw = (out.stdout or "").strip()
         if not raw or raw.startswith("ERR"):

@@ -25,6 +25,7 @@ from datetime import datetime
 from typing import Any
 
 from config import LOG_DIR, LOG_MAX_ENTRIES
+from tools._diagnostics import redact_args, redact_text
 
 _LOG_PATH      = os.path.join(LOG_DIR, "agent_activity.jsonl")
 _SNAPSHOT_DIR  = os.path.join(LOG_DIR, "system_snapshots")
@@ -106,14 +107,24 @@ class AgentLogger:
         self.log("turn_start", {"query": _truncate(query, _MAX_QUERY_CHARS)}, turn_id=turn_id)
 
     def tool_call(self, name: str, args: dict, turn_id: str) -> None:
-        args_preview = {k: _truncate(v, _MAX_ARG_CHARS) for k, v in args.items()}
+        safe_args = redact_args(args)
+        args_preview = {k: _truncate(v, _MAX_ARG_CHARS) for k, v in safe_args.items()}
         self.log("tool_call", {"name": name, "args": args_preview}, turn_id=turn_id)
 
-    def tool_result(self, name: str, content: str, turn_id: str) -> None:
-        self.log("tool_result", {
+    def tool_result(
+        self,
+        name: str,
+        content: str,
+        turn_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        data: dict[str, Any] = {
             "name": name,
-            "content": _truncate(content, _MAX_RESULT_CHARS),
-        }, turn_id=turn_id)
+            "content": _truncate(redact_text(content), _MAX_RESULT_CHARS),
+        }
+        if metadata:
+            data.update(metadata)
+        self.log("tool_result", data, turn_id=turn_id)
 
     def final_response(self, response: str, turn_id: str) -> None:
         self.log("final_response", {
@@ -124,10 +135,19 @@ class AgentLogger:
         self.log("synth_retry", {"ok": ok}, turn_id=turn_id)
 
     def error(self, exc: Exception, turn_id: str) -> None:
-        self.log("error", {"exc": str(exc)}, turn_id=turn_id)
+        self.log("error", {"exc": redact_text(str(exc))}, turn_id=turn_id)
 
-    def tool_error(self, name: str, exc: Exception, turn_id: str) -> None:
-        self.log("error", {"name": name, "exc": str(exc)}, turn_id=turn_id)
+    def tool_error(
+        self,
+        name: str,
+        exc: Exception,
+        turn_id: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        data: dict[str, Any] = {"name": name, "exc": redact_text(str(exc))}
+        if metadata:
+            data.update(metadata)
+        self.log("error", data, turn_id=turn_id)
 
     def system_prompt_snapshot(self, prompt: str, turn_id: str) -> str:
         """Log system prompt hash; write full text to system_snapshots/<hash>.txt only on first seen."""

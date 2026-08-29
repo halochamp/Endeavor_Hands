@@ -12,12 +12,14 @@ import os
 import re
 import sys
 import subprocess
-import tempfile
 import uuid
 from pathlib import Path
 from tools._progress import progress as _progress
-from tools.bash import _build_sandbox_profile
+from tools._sandbox import RealSandboxBackend, build_sandbox_profile
 from tools._truncate import truncate_with_save
+from tools._diagnostics import Diagnostic, append_diagnostic, classify_exception, classify_process_failure, flatten_exception
+
+_SANDBOX_BACKEND = RealSandboxBackend()
 
 _TIMEOUT_DEFAULT = 120  # data analysis ใช้เวลานานกว่า bash
 _MAX_CHARS_DEFAULT = 10_000
@@ -60,28 +62,28 @@ def _classify_error(stderr: str) -> str | None:
 def _python_exec_impl(code: str, timeout: int = _TIMEOUT_DEFAULT, max_chars: int = _MAX_CHARS_DEFAULT) -> str:
     from config import WORKSPACE
     if not code or not code.strip():
-        return "[error] code is required"
+        return append_diagnostic(
+            "[error] code is required",
+            Diagnostic("tool_validation", "tool", False),
+        )
     script = None
-    profile_path = None
     try:
         Path(WORKSPACE).mkdir(parents=True, exist_ok=True)
         script = Path(WORKSPACE) / f"._exec_{uuid.uuid4().hex[:8]}.py"
         # OS-level sandbox เหมือน bash — เขียนได้เฉพาะ workspace + /tmp + skills/ (audit P1)
-        profile = _build_sandbox_profile(WORKSPACE, extra_write_paths=(_SKILLS_DIR,))
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".sb", delete=False) as pf:
-            pf.write(profile)
-            profile_path = pf.name
+        profile = build_sandbox_profile(WORKSPACE, extra_write_paths=(_SKILLS_DIR,))
         _progress("running code…")
         script.write_text(code, encoding="utf-8")
         try:
             try:
-                proc = subprocess.run(
+                proc = _SANDBOX_BACKEND.run(
                     # -u: unbuffered stdout — without it, Python block-buffers stdout (~8KB)
                     # when writing to a pipe (not a tty), so a script killed mid-run on
                     # timeout has its already-printed output still sitting in the child's
                     # buffer, never flushed to us. Partial-output-on-timeout below is a
                     # no-op without this flag.
-                    ["sandbox-exec", "-f", profile_path, sys.executable, "-u", str(script)],
+                    [sys.executable, "-u", str(script)],
+                    profile=profile,
                     capture_output=True, text=True,
                     timeout=timeout, cwd=WORKSPACE, stdin=subprocess.DEVNULL,
                 )
@@ -97,7 +99,10 @@ def _python_exec_impl(code: str, timeout: int = _TIMEOUT_DEFAULT, max_chars: int
                 if e.stderr:
                     partial += f"\n[stderr]\n{_decode(e.stderr)}"
                 partial = partial.strip()
-                note = f"[error] timed out after {timeout}s"
+                note = append_diagnostic(
+                    f"[error] timed out after {timeout}s",
+                    Diagnostic("timeout", "process", True),
+                )
                 if partial:
                     note += " — partial output before timeout:"
                     partial = truncate_with_save(partial, max_chars, WORKSPACE, "python_exec",
@@ -110,20 +115,21 @@ def _python_exec_impl(code: str, timeout: int = _TIMEOUT_DEFAULT, max_chars: int
                 script.unlink()
             except Exception:
                 pass
-            try:
-                os.unlink(profile_path)
-            except Exception:
-                pass
         out = proc.stdout or ""
         if proc.stderr:
             out += f"\n[stderr]\n{proc.stderr}"
             hint = _classify_error(proc.stderr)
             if hint:
                 out += f"\n[hint] {hint}"
+        diagnostic = classify_process_failure(
+            proc.returncode, proc.stderr or "", workspace=WORKSPACE,
+        )
         if proc.returncode != 0 and not out.strip():
-            return (f"[error] exited {proc.returncode}, no output — add print() statements "
-                     f"before the crash point and re-run to see where it failed")
-        out = out.strip() or "(no output)"
+            return append_diagnostic(
+                f"[error] exited {proc.returncode}, no output — add print() statements before the crash point and re-run to see where it failed",
+                diagnostic,
+            )
+        out = append_diagnostic(out.strip() or "(no output)", diagnostic)
         # keep_tail ONLY on a failed run: a crash traceback + [hint] sit at the END of
         # stdout+stderr, so a head-only cut would hide exactly the part that explains the
         # failure. A clean successful run stays head-only — the docstring's truncation
@@ -141,6 +147,12 @@ def _python_exec_impl(code: str, timeout: int = _TIMEOUT_DEFAULT, max_chars: int
         )
         return out
     except FileNotFoundError:
-        return "[error] sandbox-exec not found — macOS only"
+        return append_diagnostic(
+            "[error] sandbox-exec not found — macOS only",
+            Diagnostic("sandbox_unavailable", "sandbox", False),
+        )
     except Exception as e:
-        return f"[error] python_exec failed: {e}"
+        return append_diagnostic(
+            f"[error] python_exec failed: {flatten_exception(e)}",
+            classify_exception(e, layer="tool"),
+        )

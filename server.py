@@ -18,8 +18,11 @@ framing — never print() there.
 """
 from __future__ import annotations
 
+import atexit
+import faulthandler
 import functools
 import io
+import json
 import os
 import sys
 import time
@@ -40,6 +43,7 @@ from tools.write_file import write_file as _write_file_tool
 from tools.edit import edit as _edit_tool
 from tools._safety import plan_write
 from tools._edit_grants import check_grant
+from tools._diagnostics import classify_exception, flatten_exception, metadata_from_result, redact_args, redact_text
 from tools.mcp_client import (
     mcp_list_tools as _mcp_list_tools_tool,
     mcp_call_tool as _mcp_call_tool_tool,
@@ -51,6 +55,44 @@ from tools.mcp_client import (
 # AgentLogger (agent_log.py) is a plain ring-buffer JSONL logger — no LangGraph/LLM dependency.
 
 _logger = AgentLogger()
+_LIFECYCLE_LOG = Path(__file__).resolve().parent / "logs" / "server_lifecycle.jsonl"
+_FAULT_LOG = Path(__file__).resolve().parent / "logs" / "server_faults.log"
+_FAULT_LOG_HANDLE = None
+
+
+def _append_lifecycle(event: str, **metadata) -> None:
+    """Best-effort process lifecycle evidence; never writes to MCP stdout."""
+    try:
+        _LIFECYCLE_LOG.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "event": event,
+            "pid": os.getpid(),
+            **metadata,
+        }
+        with _LIFECYCLE_LOG.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+
+
+def _enable_fault_logging() -> None:
+    global _FAULT_LOG_HANDLE
+    try:
+        _FAULT_LOG.parent.mkdir(parents=True, exist_ok=True)
+        _FAULT_LOG_HANDLE = _FAULT_LOG.open("a", encoding="utf-8")
+        faulthandler.enable(file=_FAULT_LOG_HANDLE, all_threads=True)
+    except Exception:
+        _FAULT_LOG_HANDLE = None
+
+
+def _log_atexit() -> None:
+    _append_lifecycle("atexit")
+    try:
+        if _FAULT_LOG_HANDLE is not None:
+            _FAULT_LOG_HANDLE.flush()
+    except Exception:
+        pass
 
 
 def _logged(name: str):
@@ -65,17 +107,43 @@ def _logged(name: str):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
             tid = _logger.new_turn_id()
-            _logger.tool_call(name, kwargs, tid)
-            print(f"[{time.strftime('%H:%M:%S')}] → {name} {kwargs}", file=sys.stderr, flush=True)
+            started = time.monotonic()
+            safe_kwargs = redact_args(kwargs)
+            _logger.tool_call(name, safe_kwargs, tid)
+            print(f"[{time.strftime('%H:%M:%S')}] → {name} {safe_kwargs}", file=sys.stderr, flush=True)
             try:
                 out = fn(*args, **kwargs)
-                _logger.tool_result(name, str(out), tid)
-                preview = str(out)[:200]
-                print(f"[{time.strftime('%H:%M:%S')}] ← {name}: {preview}", file=sys.stderr, flush=True)
+                out_text = str(out)
+                metadata = metadata_from_result(out_text)
+                metadata["duration_ms"] = round((time.monotonic() - started) * 1000)
+                _logger.tool_result(name, out_text, tid, metadata=metadata)
+                preview = redact_text(out_text)[:200]
+                diag = metadata.get("diagnostic_code", "-")
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] ← {name} "
+                    f"status={metadata.get('status', 'ok')} diagnostic={diag} "
+                    f"duration_ms={metadata['duration_ms']}: {preview}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 return out
             except Exception as e:
-                _logger.tool_error(name, e, tid)
-                print(f"[{time.strftime('%H:%M:%S')}] ✗ {name}: {e}", file=sys.stderr, flush=True)
+                diagnostic = classify_exception(e, layer=name)
+                metadata = {
+                    "status": "error",
+                    "diagnostic_code": diagnostic.code,
+                    "diagnostic_layer": diagnostic.layer,
+                    "retryable": diagnostic.retryable,
+                    "duration_ms": round((time.monotonic() - started) * 1000),
+                }
+                _logger.tool_error(name, e, tid, metadata=metadata)
+                print(
+                    f"[{time.strftime('%H:%M:%S')}] ✗ {name} "
+                    f"diagnostic={diagnostic.code} duration_ms={metadata['duration_ms']}: "
+                    f"{redact_text(flatten_exception(e))}",
+                    file=sys.stderr,
+                    flush=True,
+                )
                 raise
 
         return wrapper
@@ -501,9 +569,13 @@ def computer(
     element list as text.
 
     Start with action="see" when state is unknown — attaches the current screenshot and returns
-    [OBS obs_N] with eN elements to act on (scroll to reveal more). Prefer element_id="eN" +
+    [OBS obs_N] with eN elements to act on (scroll to reveal more). see/inspect use a separate bounded
+    observation budget, so diagnosis does not consume the mutation-action ceiling. Prefer element_id="eN" +
     observation_id="obs_N" over target text for click/double_click/triple_click/right_click/hover/
     scroll/drag. coord is disabled. Look at the attached image / read [OBS] after every mutation.
+    Post-action change detection accepts either semantic AX/OCR change or compact visual change.
+    type additionally reports +input_verified, +input_focus_verified, or +input_unverified without
+    retaining or exposing secure-field values.
 
     Silent-failure recovery: click → no_visible_change → detect failure from effect/image/[OBS] →
     see or inspect → retry a different current element/target. Never repeat or claim success. A
@@ -524,10 +596,11 @@ def computer(
     expect="focus:<label>" — is the named element focused now (Accessibility-based);
     expect="app:<name>" — is this app frontmost; expect="window:<text>" — does the
     window title contain this text; expect="text:<text>" — is this text visible
-    on screen. Recognized-kind results append +verified (met) or +expectation_not_met
-    (not met) to effect; if Accessibility can't be checked right now it appends
+    inside the frontmost window. Background-window OCR never satisfies text verification.
+    Recognized-kind results append +verified (met) or +expectation_not_met (not met) to
+    effect; if the required Accessibility/window-bounds signal can't be checked it appends
     +expect_unknown instead of a false negative. A bare prose expect with no kind
-    prefix (e.g. expect="Search field focused") is only searched as literal on-screen
+    prefix (e.g. expect="Search field focused") is only searched as literal frontmost-window
     text and will usually fail — use one of the four kinds above instead; a failed
     unrecognized-form expect also returns a "hint:" line repeating this.
     KNOWN LIMIT — in Chrome/Chromium, expect="focus:<label>" is reliable for the
@@ -667,4 +740,17 @@ def mcp_remove_server(name: str) -> str:
 
 
 if __name__ == "__main__":
-    mcp.run()  # stdio transport
+    _enable_fault_logging()
+    atexit.register(_log_atexit)
+    _append_lifecycle("server_start")
+    try:
+        mcp.run()  # stdio transport
+    except BaseException as exc:
+        _append_lifecycle(
+            "mcp_run_exception",
+            exception_type=type(exc).__name__,
+            detail=redact_text(flatten_exception(exc))[:1000],
+        )
+        raise
+    else:
+        _append_lifecycle("mcp_run_returned")

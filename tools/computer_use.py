@@ -20,11 +20,14 @@ from tools._progress import progress as _progress, phase as _phase
 
 _ACTION_ATTEMPTS = [0]
 _ACTION_MAX = 15
+_OBSERVATION_ATTEMPTS = [0]
+_OBSERVATION_MAX = 36
 # Per-turn overrides — set by graph.py for turns that run with no human watching
 # (e.g. an AWAKE-fired background turn). Both reset to defaults every real turn
 # by reset_computer_guards() so a tightened scope never leaks into a later,
 # normal (human-supervised) turn.
 _ACTION_MAX_OVERRIDE = [None]
+_OBSERVATION_MAX_OVERRIDE = [None]
 _FILE_DELETION_FORBIDDEN = os.getenv("V2_DENY_FILE_DELETION", "").strip().lower() in {"1", "true", "yes"}
 _DESTRUCTIVE_GUARD = [_FILE_DELETION_FORBIDDEN]
 # Two tiers, not one — ported from MAX 2026-07-21 (live-reproduced there as
@@ -118,11 +121,13 @@ def pop_last_image_path() -> tuple[str, bool]:
 
 def reset_computer_guards() -> None:
     _ACTION_ATTEMPTS[0] = 0
+    _OBSERVATION_ATTEMPTS[0] = 0
     _LAST_SIGNATURE[0] = ""
     _LAST_SCREEN_TEXT[0] = ""
     _LAST_FRONTMOST_APP[0] = ""
     _LAST_CLICK_TARGET[0] = ""
     _ACTION_MAX_OVERRIDE[0] = None
+    _OBSERVATION_MAX_OVERRIDE[0] = None
     _DESTRUCTIVE_GUARD[0] = _FILE_DELETION_FORBIDDEN
     previous = _LATEST_OBSERVATION[0]
     if previous:
@@ -130,14 +135,42 @@ def reset_computer_guards() -> None:
     _LATEST_OBSERVATION[0] = None
 
 
-def set_computer_turn_scope(action_max: int | None = None, block_destructive: bool = False) -> None:
-    """Tighten this turn's computer-use ceiling below the normal per-turn defaults —
-    called by graph.py for turns that run with no human watching the screen (e.g. an
-    AWAKE-fired background turn). Takes effect immediately and lasts until the next
-    reset_computer_guards() call (every real turn), so a tightened scope never leaks
-    into a later, normal (human-supervised) turn."""
+def set_computer_turn_scope(
+    action_max: int | None = None,
+    block_destructive: bool = False,
+    observation_max: int | None = None,
+) -> None:
+    """Tighten this turn's computer-use ceilings below the normal defaults.
+
+    Mutation actions and read-only observations have separate bounded budgets so
+    diagnosis does not consume the same safety ceiling as click/type/key/drag.
+    Unsupervised callers that already pass ``action_max`` automatically get a
+    proportionally tighter observation ceiling unless they provide one explicitly.
+    Both overrides reset at the next real turn.
+    """
     _ACTION_MAX_OVERRIDE[0] = action_max
+    _OBSERVATION_MAX_OVERRIDE[0] = (
+        observation_max
+        if observation_max is not None
+        else max(action_max * 2, action_max) if action_max is not None else None
+    )
     _DESTRUCTIVE_GUARD[0] = _FILE_DELETION_FORBIDDEN or block_destructive
+
+
+def _effective_mutation_max() -> int:
+    return _ACTION_MAX_OVERRIDE[0] if _ACTION_MAX_OVERRIDE[0] is not None else _ACTION_MAX
+
+
+def _effective_observation_max() -> int:
+    return (
+        _OBSERVATION_MAX_OVERRIDE[0]
+        if _OBSERVATION_MAX_OVERRIDE[0] is not None
+        else _OBSERVATION_MAX
+    )
+
+
+def _observation_budget_available() -> bool:
+    return _OBSERVATION_ATTEMPTS[0] < _effective_observation_max()
 
 
 def _next_observation_id() -> str:
@@ -378,7 +411,11 @@ def _observe() -> tuple[list[dict], str, int, int, float, float]:
 
 
 _POST_ACTION_TIMEOUT = 1.2
-_POST_ACTION_POLL = 0.12
+_POST_ACTION_SHORT_TIMEOUT = 0.9
+_POST_ACTION_OPEN_TIMEOUT = 2.4
+_POST_ACTION_POLL = 0.10
+_POST_ACTION_POLL_MAX = 0.40
+_VISUAL_CHANGE_MIN_FRACTION = 0.003
 # Extra bounded wait applied ONLY when the caller passed expect= or an
 # open_app/open_url app= — both name an async condition (a page finishing
 # load, an app becoming frontmost) that routinely takes longer than the
@@ -391,6 +428,20 @@ _POST_ACTION_POLL = 0.12
 _POST_ACTION_EXTENDED_TIMEOUT = 4.0
 
 
+def _screen_change_signals(before: ScreenSnapshot, current: ScreenSnapshot) -> tuple[bool, bool]:
+    semantic_changed = current.fingerprint != before.fingerprint
+    visual_changed = current.visual_delta(before) >= _VISUAL_CHANGE_MIN_FRACTION
+    return semantic_changed, visual_changed
+
+
+def _base_post_action_timeout(action: str) -> float:
+    if action in {"open_app", "open_url"}:
+        return _POST_ACTION_OPEN_TIMEOUT
+    if action in {"click", "double_click", "triple_click", "right_click", "hover", "type"}:
+        return _POST_ACTION_SHORT_TIMEOUT
+    return _POST_ACTION_TIMEOUT
+
+
 def _app_matches(requested_app: str, actual_app: str) -> bool:
     # `open -a` can return 0 without the target ever becoming frontmost, and
     # a localized/short app name can legitimately differ from the requested
@@ -401,7 +452,7 @@ def _app_matches(requested_app: str, actual_app: str) -> bool:
 
 
 def _post_action_snapshot(
-    before: ScreenSnapshot, *, expect: str = "", requested_app: str = "",
+    before: ScreenSnapshot, *, expect: str = "", requested_app: str = "", action: str = "",
 ) -> tuple[ScreenSnapshot, str]:
     """Poll screen state until it changes and stabilizes, or the timeout expires.
 
@@ -421,20 +472,27 @@ def _post_action_snapshot(
     warning showed the action had, in fact, already succeeded a moment later."""
     _progress("กำลังตรวจสอบผลลัพธ์บนหน้าจอ…")
     waiting_on_condition = bool(expect) or bool(requested_app)
-    deadline = time.monotonic() + max(0.0, _POST_ACTION_TIMEOUT)
+    base_timeout = max(0.0, _base_post_action_timeout(action))
+    started = time.monotonic()
+    deadline = started + base_timeout
     extended_deadline = (
-        time.monotonic() + max(_POST_ACTION_TIMEOUT, _POST_ACTION_EXTENDED_TIMEOUT)
+        started + max(base_timeout, _POST_ACTION_EXTENDED_TIMEOUT)
         if waiting_on_condition else deadline
     )
     chosen: ScreenSnapshot | None = None
-    previous_fingerprint = ""
-    changed = False
+    previous_state: tuple[str, str] | None = None
+    semantic_changed = False
+    visual_changed = False
     stable_hits = 0
+    poll_delay = max(0.0, _POST_ACTION_POLL)
     while True:
         current = _capture_snapshot(notify=False)
-        changed = changed or current.fingerprint != before.fingerprint
-        stable_hits = stable_hits + 1 if previous_fingerprint and current.fingerprint == previous_fingerprint else 1
-        previous_fingerprint = current.fingerprint
+        semantic_now, visual_now = _screen_change_signals(before, current)
+        semantic_changed = semantic_changed or semantic_now
+        visual_changed = visual_changed or visual_now
+        current_state = (current.fingerprint, current.visual_fingerprint)
+        stable_hits = stable_hits + 1 if previous_state is not None and current_state == previous_state else 1
+        previous_state = current_state
         if chosen is not None and chosen is not current:
             Path(chosen.image_path).unlink(missing_ok=True)
         chosen = current
@@ -443,13 +501,15 @@ def _post_action_snapshot(
             (bool(expect) and not _expected(current, expect))
             or (bool(requested_app) and not _app_matches(requested_app, current.app))
         )
+        changed = semantic_changed or visual_changed
         if changed and stable_hits >= 2 and not condition_pending:
             break
         if now >= deadline and not condition_pending:
             break
         if now >= extended_deadline:
             break
-        time.sleep(max(0.0, _POST_ACTION_POLL))
+        time.sleep(poll_delay)
+        poll_delay = min(_POST_ACTION_POLL_MAX, max(_POST_ACTION_POLL, poll_delay * 2))
     assert chosen is not None
     return _publish(chosen), ("changed" if changed else "no_visible_change")
 
@@ -512,15 +572,99 @@ def _inspect(observation_id: str, element_id: str, question: str) -> str:
 _EXPECT_KINDS = {"app", "window", "text", "focus"}
 
 
+def _normalize_visible_text(value: str) -> str:
+    """Exact, rendering-tolerant text normalization for verification only.
+
+    Whitespace is collapsed and OCR-introduced spaces immediately before common
+    punctuation are removed. This intentionally does not use fuzzy/similarity
+    matching: the normalized expected text must still be an exact substring of
+    one observed line or of the ordered OCR text stream.
+    """
+    text = " ".join(str(value or "").casefold().split())
+    text = re.sub(r"\s+([:;,.!?])", r"\1", text)
+    text = re.sub(r"([\[(])\s+", r"\1", text)
+    text = re.sub(r"\s+([\])])", r"\1", text)
+    return text
+
+
+def _ordered_ocr_text(snapshot: ScreenSnapshot) -> str:
+    """Return frontmost-window OCR in deterministic reading order without fuzziness.
+
+    Vision OCR covers the whole screenshot, so it must be clipped to Accessibility's
+    focused-window bounds before it can support ``expect=text``. Without trustworthy
+    bounds, whole-screen OCR is deliberately unavailable for verification rather than
+    risking a false positive from a background window.
+    """
+    if snapshot.window_bounds is None:
+        return ""
+    wx, wy, ww, wh = snapshot.window_bounds
+    screen_w, screen_h = snapshot.screen_size
+    boxes: list[tuple[float, float, str]] = []
+    for box in snapshot.ocr_boxes:
+        try:
+            text = str(box.get("text") or "").strip()
+            if not text:
+                continue
+            x = float(box["x"])
+            y = float(box["y"])
+            w = float(box["w"])
+            h = float(box["h"])
+            center_x = (x + w / 2) * screen_w
+            center_y = (1 - (y + h / 2)) * screen_h
+            if not (wx - 8 <= center_x <= wx + ww + 8 and wy - 8 <= center_y <= wy + wh + 8):
+                continue
+            boxes.append((y + h / 2, x, text))
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not boxes:
+        return ""
+
+    # Vision uses bottom-left coordinates; higher y is visually higher. Group
+    # neighboring boxes into lines, then concatenate those lines top-to-bottom.
+    lines: list[tuple[float, list[tuple[float, str]]]] = []
+    for y, x, text in sorted(boxes, key=lambda item: (-item[0], item[1])):
+        match = next((line for line in lines if abs(line[0] - y) <= 0.015), None)
+        if match is None:
+            lines.append((y, [(x, text)]))
+        else:
+            match[1].append((x, text))
+    rendered = [
+        " ".join(text for _, text in sorted(parts, key=lambda item: item[0]))
+        for _, parts in sorted(lines, key=lambda item: -item[0])
+    ]
+    return _normalize_visible_text(" ".join(rendered))
+
+
+def _expect_text_visible(snapshot: ScreenSnapshot, needle: str) -> bool | None:
+    normalized = _normalize_visible_text(needle)
+    if not normalized:
+        return False
+    # AX traversal starts at the focused window, so AX text is safe evidence even
+    # when explicit window bounds are missing. OCR elements are not safe in that
+    # situation because the capture itself spans the whole screen.
+    if any(
+        e.source == "ax" and normalized in _normalize_visible_text(e.text)
+        for e in snapshot.elements
+    ):
+        return True
+    if snapshot.window_bounds is None:
+        return None
+    ordered_ocr = _ordered_ocr_text(snapshot)
+    return bool(ordered_ocr and normalized in ordered_ocr)
+
+
 def _expect_uses_recognized_kind(expect: str) -> bool:
     kind, sep, _ = expect.partition(":")
     return bool(sep) and kind.strip().casefold() in _EXPECT_KINDS
 
 
 def _expected(snapshot: ScreenSnapshot, expect: str) -> bool | None:
-    """True/False for a resolved check; None means "not checkable right now"
-    (currently only focus: under unavailable Accessibility) — never silently
-    folded into False, which would be indistinguishable from a genuine miss.
+    """True/False for a resolved check; None means "not checkable right now".
+
+    ``focus:`` needs Accessibility, while ``text:`` needs either focused-window
+    AX evidence or trustworthy focused-window bounds for OCR. An unavailable
+    signal is never silently folded into False, which would be indistinguishable
+    from a genuine miss.
 
     Only "app:"/"window:"/"text:"/"focus:" are recognized kind prefixes —
     treating ANY prefix before the first colon as a kind (the previous
@@ -554,10 +698,52 @@ def _expected(snapshot: ScreenSnapshot, expect: str) -> bool | None:
         if not needle: return False
         if kind_norm == "app": return needle in snapshot.app.casefold()
         if kind_norm == "window": return needle in snapshot.window.casefold()
-        return any(needle in e.text.casefold() for e in snapshot.elements)
+        return _expect_text_visible(snapshot, needle)
     needle = expect.strip().casefold()
     if not needle: return False
-    return any(needle in e.text.casefold() for e in snapshot.elements)
+    return _expect_text_visible(snapshot, needle)
+
+
+_EDITABLE_AX_ROLES = {"AXTextField", "AXTextArea", "AXSearchField", "AXComboBox"}
+
+
+def _focused_editable(snapshot: ScreenSnapshot) -> ScreenElement | None:
+    if snapshot.accessibility_status != "ok":
+        return None
+    return next(
+        (
+            e for e in snapshot.elements
+            if e.source == "ax" and e.focused and e.role in _EDITABLE_AX_ROLES
+        ),
+        None,
+    )
+
+
+def _type_input_verification(before: ScreenSnapshot, after: ScreenSnapshot) -> str:
+    """Verify typing without retaining/exposing field contents.
+
+    ``value_digest`` is absent for AXSecureTextField by construction.  A digest
+    change is strong evidence the focused editable's value changed; when AX can
+    only prove focus continuity we report that weaker state explicitly.
+    """
+    before_edit = _focused_editable(before)
+    after_edit = _focused_editable(after)
+    if before_edit is None or after_edit is None:
+        return "input_unverified"
+    if before_edit.role != after_edit.role:
+        return "input_unverified"
+    distance_sq = (
+        (before_edit.point[0] - after_edit.point[0]) ** 2
+        + (before_edit.point[1] - after_edit.point[1]) ** 2
+    )
+    if distance_sq > 120.0 ** 2:
+        return "input_unverified"
+    if (
+        before_edit.value_digest != after_edit.value_digest
+        and (before_edit.value_digest or after_edit.value_digest)
+    ):
+        return "input_verified"
+    return "input_unverified+focus_verified"
 
 
 def _validate_web_url(url: str) -> None:
@@ -577,18 +763,22 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
         if action not in {"see", "inspect", "click", "double_click", "triple_click", "right_click", "type", "key", "scroll", "open_app", "open_url", "drag", "hover"}:
             return _error(f"unknown action: {action}")
         if action == "inspect":
+            if not _observation_budget_available():
+                return _error("computer observation limit reached — stop and report the current screen")
+            _OBSERVATION_ATTEMPTS[0] += 1
             return _inspect(observation_id, element_id, question)
         if _backend.failsafe_abort():
             return _error("failsafe abort — user took the mouse")
-        _effective_max = _ACTION_MAX_OVERRIDE[0] or _ACTION_MAX
-        if _ACTION_ATTEMPTS[0] >= _effective_max:
-            return _error("computer action limit reached — stop and report the current screen")
         if action == "see":
-            _ACTION_ATTEMPTS[0] += 1
+            if not _observation_budget_available():
+                return _error("computer observation limit reached — stop and report the current screen")
+            _OBSERVATION_ATTEMPTS[0] += 1
             _LAST_SIGNATURE[0] = "see"
             snapshot = _publish(_capture_snapshot())
             _LAST_SCREEN_TEXT[0] = "\n".join(str(b.get("text", "")) for b in snapshot.ocr_boxes); _LAST_FRONTMOST_APP[0] = snapshot.app
             return _result("[ok] see", snapshot)
+        if _ACTION_ATTEMPTS[0] >= _effective_mutation_max():
+            return _error("computer mutation limit reached — use see/inspect only or report the current screen")
         before = _capture_snapshot()
         if action in _CONTEXT_DEPENDENT_ACTIONS and _LAST_FRONTMOST_APP[0] and before.app != _LAST_FRONTMOST_APP[0]:
             _publish(before)
@@ -648,11 +838,10 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
                 )
             )
             if destructive_hit:
-                # Terminate, not just refuse-and-let-retry: force the ceiling so no
-                # further computer action can execute this turn — inspect is the only
-                # exception (it's gated before this check, always read-only on a
-                # retained crop); every other action, including see, hits the
-                # action-limit error above from here on. Applies uniformly whether
+                # Terminate mutations, not observations: force the mutation ceiling
+                # so no further click/type/key/drag/etc. can execute this turn. The
+                # separate bounded see/inspect budget remains available for safe
+                # diagnosis/reporting after the refusal. Applies uniformly whether
                 # this is an unsupervised background turn (always blocked, no
                 # exception) or an ordinary turn whose own request never said to
                 # delete/remove anything (see graph.py's per-turn intent check) —
@@ -660,7 +849,7 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
                 # where the user explicitly confirms starts with a fresh
                 # reset_computer_guards() remains destructive-safe when the
                 # runtime has V2_DENY_FILE_DELETION enabled.
-                _ACTION_ATTEMPTS[0] = _ACTION_MAX_OVERRIDE[0] or _ACTION_MAX
+                _ACTION_ATTEMPTS[0] = _effective_mutation_max()
                 return _error(
                     "refusing an action that looks delete/remove-related — file deletion is disabled "
                     "for this runtime, so it cannot be approved; computer access terminated for this turn"
@@ -668,6 +857,7 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
         _ACTION_ATTEMPTS[0] += 1
         _LAST_SIGNATURE[0] = signature
         _progress(f"กำลัง {action}: {(target or text or element_id)[:40]}…" if (target or text or element_id) else f"กำลัง {action}…")
+        type_delivery = ""
         if action in {"click", "double_click", "triple_click", "right_click"}:
             if coord:
                 return _error("raw coord is disabled; use element_id or visible target text")
@@ -695,7 +885,7 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
         elif action == "type":
             if not text:
                 return _error("type requires text")
-            _backend.type_text(text)
+            type_delivery = _backend.type_text(text)
             _log_action(action)
         elif action == "key":
             _backend.key(text)
@@ -742,7 +932,9 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
         # than special-casing specific hotkeys.
         _backend.settle()
         requested_app = target if action == "open_app" else app if action == "open_url" else ""
-        after, ui_effect = _post_action_snapshot(before, expect=expect, requested_app=requested_app)
+        after, ui_effect = _post_action_snapshot(
+            before, expect=expect, requested_app=requested_app, action=action,
+        )
         Path(before.image_path).unlink(missing_ok=True)
         _LAST_SCREEN_TEXT[0] = "\n".join(str(b.get("text", "")) for b in after.ocr_boxes); _LAST_FRONTMOST_APP[0] = after.app
         # Independent verification signals, combined rather than overwritten —
@@ -754,6 +946,10 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
         # fact, succeeded — the model had no way to tell "verification heuristic
         # missed" apart from "nothing happened".
         notes: list[str] = []
+        if action == "type":
+            notes.append(_type_input_verification(before, after))
+            if type_delivery == "clipboard_changed_externally":
+                notes.append("clipboard_changed_externally")
         if requested_app.strip() and not _app_matches(requested_app, after.app):
             # `open -a` can return 0 without the target ever actually becoming
             # frontmost — reporting [ok] here would let the model believe
@@ -765,9 +961,9 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
         if expect:
             verdict = _expected(after, expect)
             if verdict is None:
-                # Currently only focus: under unavailable Accessibility — a
-                # real "can't tell" state, never folded into expectation_not_met
-                # (which the model would read as a confirmed miss).
+                # A real "can't tell" state: e.g. focus: without Accessibility,
+                # or text: without focused-window AX evidence/bounds. Never fold
+                # this into expectation_not_met, which would look like a confirmed miss.
                 notes.append("expect_unknown")
             elif verdict:
                 notes.append("verified")
@@ -786,7 +982,14 @@ def _computer_impl(action: str, target: str = "", text: str = "", coord: str = "
                         'text and not found — for state checks use expect="focus:<label>" '
                         '(is it focused now), "app:<name>", or "window:<text>" instead.'
                     )
-        if {"app_not_frontmost", "expectation_not_met", "expect_unknown"} & set(notes):
+        verification_warning = bool(
+            {"app_not_frontmost", "expectation_not_met", "expect_unknown", "clipboard_changed_externally"} & set(notes)
+        ) or (
+            action == "type"
+            and "input_verified" not in notes
+            and "verified" not in notes
+        )
+        if verification_warning:
             prefix = f"[warning] {action}"
         elif ui_effect == "changed" or "verified" in notes:
             prefix = f"[ok] {action}"

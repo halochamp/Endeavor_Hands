@@ -5,17 +5,17 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 import time
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import urlsplit
 
-from tools.bash import _build_sandbox_profile
+from tools._sandbox import RealSandboxBackend, build_sandbox_profile
 from tools._truncate import truncate_with_save
+from tools._diagnostics import append_diagnostic, classify_process_failure
 
 _GIT_BIN = os.path.realpath(shutil.which("git") or "/usr/bin/git")
-_SANDBOX_EXEC = shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec"
+_SANDBOX_BACKEND = RealSandboxBackend()
 _SSH_BIN = os.path.realpath(shutil.which("ssh") or "/usr/bin/ssh")
 _GIT_EXEC_PATH = subprocess.run(
     [_GIT_BIN, "--exec-path"], capture_output=True, text=True, check=False
@@ -292,7 +292,7 @@ def _git_profile(
             if _GIT_REMOTE_HTTPS and os.path.exists(_GIT_REMOTE_HTTPS):
                 allowed_execs.append(_GIT_REMOTE_HTTPS)
 
-    profile = _build_sandbox_profile(
+    profile = build_sandbox_profile(
         workspace,
         extra_read_paths=tuple(extra_reads),
         extra_unlink_paths=(git_dir,) if mutate else (),
@@ -312,34 +312,22 @@ def _run_guarded_git(
     push_transport: str | None = None,
     extra_env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    profile_path: str | None = None
-    try:
-        profile = _git_profile(workspace, git_dir, mutate=mutate, push_transport=push_transport)
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".sb", delete=False) as handle:
-            handle.write(profile)
-            profile_path = handle.name
-
-        env = os.environ.copy()
-        env["GIT_TERMINAL_PROMPT"] = "0"
-        if extra_env:
-            env.update(extra_env)
-        if not mutate:
-            env["GIT_OPTIONAL_LOCKS"] = "0"
-        result = subprocess.run(
-            [_SANDBOX_EXEC, "-f", profile_path, _GIT_BIN, "-C", repo_root, *args],
-            capture_output=True,
-            text=True,
-            stdin=subprocess.DEVNULL,
-            timeout=timeout,
-            env=env,
-        )
-        return result
-    finally:
-        if profile_path:
-            try:
-                os.unlink(profile_path)
-            except OSError:
-                pass
+    profile = _git_profile(workspace, git_dir, mutate=mutate, push_transport=push_transport)
+    env = os.environ.copy()
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    if extra_env:
+        env.update(extra_env)
+    if not mutate:
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+    return _SANDBOX_BACKEND.run(
+        [_GIT_BIN, "-C", repo_root, *args],
+        profile=profile,
+        capture_output=True,
+        text=True,
+        stdin=subprocess.DEVNULL,
+        timeout=timeout,
+        env=env,
+    )
 
 
 def _format_result(result: subprocess.CompletedProcess[str], workspace: str) -> str:
@@ -349,6 +337,10 @@ def _format_result(result: subprocess.CompletedProcess[str], workspace: str) -> 
     output = output.strip() or "(no output)"
     if result.returncode != 0:
         output = f"[error] git exited {result.returncode}\n{output}"
+    output = append_diagnostic(
+        output,
+        classify_process_failure(result.returncode, result.stderr or "", workspace=workspace),
+    )
     return truncate_with_save(output, 10_000, workspace, "git", marker_first=True, keep_tail=True)
 
 

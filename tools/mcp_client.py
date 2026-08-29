@@ -12,9 +12,7 @@ import asyncio
 import fcntl
 import json
 import os
-import shutil
 import sys
-import tempfile
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from contextlib import asynccontextmanager, contextmanager
@@ -25,10 +23,11 @@ from langchain_core.tools import tool
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import MCP_MAX_CHARS, MCP_SERVERS, MCP_TIMEOUT, WORKSPACE
-from tools.bash import _build_sandbox_profile
+from tools._sandbox import RealSandboxBackend, build_sandbox_profile
+from tools._diagnostics import Diagnostic, append_diagnostic, classify_exception, flatten_exception
 
 _T = TypeVar("_T")
-_SANDBOX_EXEC = shutil.which("sandbox-exec") or "/usr/bin/sandbox-exec"
+_SANDBOX_BACKEND = RealSandboxBackend()
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _WORK_DIR = _PROJECT_ROOT / "work"
 
@@ -201,27 +200,21 @@ async def _open_session(cfg: dict):
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
     _WORK_DIR.mkdir(parents=True, exist_ok=True)
-    profile_path: str | None = None
-    try:
-        profile = _build_sandbox_profile(WORKSPACE)
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".sb", dir=_WORK_DIR, delete=False) as handle:
-            handle.write(profile)
-            profile_path = handle.name
+    profile = build_sandbox_profile(WORKSPACE)
+    with _SANDBOX_BACKEND.prepare(
+        [cfg["command"], *cfg["args"]],
+        profile=profile,
+        profile_dir=_WORK_DIR,
+    ) as invocation:
         params = StdioServerParameters(
-            command=_SANDBOX_EXEC,
-            args=["-f", profile_path, cfg["command"], *cfg["args"]],
+            command=invocation.argv[0],
+            args=list(invocation.argv[1:]),
             cwd=cfg["cwd"],
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
                 yield session
-    finally:
-        if profile_path:
-            try:
-                os.unlink(profile_path)
-            except OSError:
-                pass
 
 
 async def _list_tools_async(cfg: dict) -> str:
@@ -236,7 +229,12 @@ async def _call_tool_async(cfg: dict, tool_name: str, arguments: dict) -> str:
         result = await session.call_tool(tool_name, arguments)
     parts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
     body = "\n".join(parts) if parts else "(tool returned no text content)"
-    return f"[error] {tool_name} returned an error: {body}" if result.isError else body
+    if result.isError:
+        return append_diagnostic(
+            f"[error] {tool_name} returned an error: {body}",
+            Diagnostic("mcp_child_error", "mcp", False),
+        )
+    return body
 
 
 @tool
@@ -244,11 +242,17 @@ def mcp_list_tools(server: str) -> str:
     """List tools exposed by a configured HTTP or stdio MCP server."""
     cfg = _all_servers().get(server)
     if cfg is None:
-        return f"[error] no MCP server named '{server}' configured — known servers: {_known_servers()}"
+        return append_diagnostic(
+            f"[error] no MCP server named '{server}' configured — known servers: {_known_servers()}",
+            Diagnostic("tool_validation", "mcp", False),
+        )
     try:
         return _cap(_run_async(lambda: _list_tools_async(cfg)))
     except Exception as exc:
-        return f"[error] mcp_list_tools failed for '{server}': {exc}"
+        return append_diagnostic(
+            f"[error] mcp_list_tools failed for '{server}': {flatten_exception(exc)}",
+            classify_exception(exc, layer="mcp"),
+        )
 
 
 @tool
@@ -256,17 +260,29 @@ def mcp_call_tool(server: str, tool_name: str, arguments_json: str = "{}") -> st
     """Call a tool exposed by a configured HTTP or stdio MCP server."""
     cfg = _all_servers().get(server)
     if cfg is None:
-        return f"[error] no MCP server named '{server}' configured — known servers: {_known_servers()}"
+        return append_diagnostic(
+            f"[error] no MCP server named '{server}' configured — known servers: {_known_servers()}",
+            Diagnostic("tool_validation", "mcp", False),
+        )
     try:
         arguments = json.loads(arguments_json or "{}")
     except json.JSONDecodeError as exc:
-        return f"[error] invalid arguments_json: {exc}"
+        return append_diagnostic(
+            f"[error] invalid arguments_json: {exc}",
+            Diagnostic("tool_validation", "mcp", False),
+        )
     if not isinstance(arguments, dict):
-        return "[error] arguments_json must be a JSON object, e.g. '{\"key\": \"value\"}'"
+        return append_diagnostic(
+            "[error] arguments_json must be a JSON object, e.g. '{\"key\": \"value\"}'",
+            Diagnostic("tool_validation", "mcp", False),
+        )
     try:
         return _cap(_run_async(lambda: _call_tool_async(cfg, tool_name, arguments)))
     except Exception as exc:
-        return f"[error] mcp_call_tool failed for '{server}.{tool_name}': {exc}"
+        return append_diagnostic(
+            f"[error] mcp_call_tool failed for '{server}.{tool_name}': {flatten_exception(exc)}",
+            classify_exception(exc, layer="mcp"),
+        )
 
 
 @tool

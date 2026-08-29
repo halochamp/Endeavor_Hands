@@ -27,6 +27,18 @@ try:
     from AppKit import NSWorkspace as _NSWorkspace  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover
     _NSWorkspace = None
+try:
+    from AppKit import (  # type: ignore[import-not-found]
+        NSPasteboard as _NSPasteboard,
+        NSPasteboardItem as _NSPasteboardItem,
+        NSPasteboardTypeString as _NSPasteboardTypeString,
+    )
+    from Foundation import NSData as _NSData  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    _NSPasteboard = None
+    _NSPasteboardItem = None
+    _NSPasteboardTypeString = None
+    _NSData = None
 
 
 _KEYCODES = {
@@ -130,6 +142,7 @@ def capture(path: str) -> None:
     target = Path(path)
     result = subprocess.run(
         ["screencapture", "-x", "-m", str(target)], capture_output=True, timeout=5,
+        stdin=subprocess.DEVNULL,
     )
     if result.returncode or not target.exists():
         raise RuntimeError("screencapture failed")
@@ -138,7 +151,8 @@ def capture(path: str) -> None:
 def image_dimensions(path: str) -> tuple[int, int]:
     """Return a captured PNG's native pixel dimensions using macOS ``sips``."""
     result = subprocess.run(["sips", "-g", "pixelWidth", "-g", "pixelHeight", path],
-                            capture_output=True, text=True, timeout=5)
+                            capture_output=True, text=True, timeout=5,
+                            stdin=subprocess.DEVNULL)
     values = [int(value) for value in re.findall(r"pixel(?:Width|Height):\s*(\d+)", result.stdout)]
     if result.returncode or len(values) != 2:
         raise RuntimeError("could not read capture dimensions")
@@ -262,14 +276,84 @@ def drag(x1: float, y1: float, x2: float, y2: float, steps: int = 10, modifiers:
     q.CGEventPost(q.kCGHIDEventTap, up)
 
 
-def type_text(text: str) -> None:
-    """Type arbitrary Unicode in one event, independent of the active keyboard layout."""
-    if not text:
+def _snapshot_pasteboard(pasteboard) -> list[list[tuple[str, bytes]]]:
+    """Materialize every pasteboard item/type in memory before temporary overwrite.
+
+    If any advertised type cannot be materialized, fail closed rather than risk
+    losing clipboard data that cannot be reconstructed after a paste transaction.
+    """
+    snapshot: list[list[tuple[str, bytes]]] = []
+    for item in pasteboard.pasteboardItems() or []:
+        saved_item: list[tuple[str, bytes]] = []
+        for paste_type in item.types() or []:
+            data = item.dataForType_(paste_type)
+            if data is None:
+                raise RuntimeError("clipboard contains a pasteboard type that cannot be safely snapshotted")
+            saved_item.append((str(paste_type), bytes(data)))
+        snapshot.append(saved_item)
+    return snapshot
+
+
+def _restore_pasteboard(pasteboard, snapshot: list[list[tuple[str, bytes]]]) -> None:
+    """Restore a previously materialized pasteboard snapshot without logging its contents."""
+    if _NSPasteboardItem is None or _NSData is None:
+        raise RuntimeError("AppKit pasteboard support is unavailable")
+    pasteboard.clearContents()
+    if not snapshot:
         return
-    q = _require_quartz()
-    event = q.CGEventCreateKeyboardEvent(None, 0, True)
-    q.CGEventKeyboardSetUnicodeString(event, len(text), text)
-    q.CGEventPost(q.kCGHIDEventTap, event)
+    items = []
+    for saved_item in snapshot:
+        item = _NSPasteboardItem.alloc().init()
+        for paste_type, payload in saved_item:
+            data = _NSData.dataWithBytes_length_(payload, len(payload))
+            if not item.setData_forType_(data, paste_type):
+                raise RuntimeError("failed to reconstruct clipboard pasteboard item")
+        items.append(item)
+    if not pasteboard.writeObjects_(items):
+        raise RuntimeError("failed to restore clipboard after typing")
+
+
+def _paste_text_transactionally(text: str) -> str:
+    """Paste text through the general pasteboard, preserving prior clipboard data.
+
+    Terminal.app ignores CoreGraphics Unicode-string keyboard events but accepts
+    the physical cmd+v key path. The clipboard is therefore snapshotted entirely
+    in memory, temporarily replaced, and restored only if its changeCount still
+    matches our staged value. If another actor changes the clipboard meanwhile,
+    that newer content wins and is never overwritten by our restore.
+    """
+    if _NSPasteboard is None or _NSPasteboardTypeString is None:
+        raise RuntimeError("AppKit pasteboard support is unavailable")
+    pasteboard = _NSPasteboard.generalPasteboard()
+    snapshot = _snapshot_pasteboard(pasteboard)
+    pasteboard.clearContents()
+    if not pasteboard.setString_forType_(text, _NSPasteboardTypeString):
+        _restore_pasteboard(pasteboard, snapshot)
+        raise RuntimeError("failed to stage clipboard text for typing")
+    staged_change_count = int(pasteboard.changeCount())
+    restored = False
+    try:
+        key("cmd+v")
+        time.sleep(0.10)
+    finally:
+        if int(pasteboard.changeCount()) == staged_change_count:
+            _restore_pasteboard(pasteboard, snapshot)
+            restored = True
+    return "clipboard_restored" if restored else "clipboard_changed_externally"
+
+
+def type_text(text: str) -> str:
+    """Type arbitrary Unicode through one deterministic paste transaction.
+
+    Live testing showed CoreGraphics Unicode keyboard events are app-dependent:
+    Terminal.app ignores them, and even native text controls can intermittently
+    fail to consume them. A physical cmd+v event is reliable across the tested
+    apps, so typing uses one path everywhere while preserving the user's prior
+    clipboard when no external actor changes it during the short transaction.
+    """
+    if not text:
+        return "no_text"
+    return _paste_text_transactionally(text)
 
 
 def key(combo: str) -> None:
@@ -336,6 +420,7 @@ def _resolve_app_path(name: str) -> str | None:
         result = subprocess.run(
             ["mdfind", f'kMDItemKind == "Application" && kMDItemDisplayName == "*{escaped}*"cd'],
             capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
@@ -367,13 +452,15 @@ def open_app(name: str) -> None:
     LaunchServices directly (see _resolve_app_path)."""
     if not name.strip():
         raise ValueError("application name is empty")
-    result = subprocess.run(["open", "-a", name], capture_output=True, text=True, timeout=10)
+    result = subprocess.run(["open", "-a", name], capture_output=True, text=True, timeout=10,
+                            stdin=subprocess.DEVNULL)
     if not result.returncode:
         return
     resolved = _resolve_app_path(name)
     if resolved is None:
         raise RuntimeError(result.stderr.strip() or f"could not open {name}")
-    fallback = subprocess.run(["open", resolved], capture_output=True, text=True, timeout=10)
+    fallback = subprocess.run(["open", resolved], capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL)
     if fallback.returncode:
         raise RuntimeError(fallback.stderr.strip() or f"could not open {resolved}")
 
@@ -393,7 +480,8 @@ def open_url(url: str, app: str = "") -> None:
         raise ValueError("open_url refuses URLs containing credentials")
     application = app.strip()
     command = ["open", "-a", application, value] if application else ["open", value]
-    result = subprocess.run(command, capture_output=True, text=True, timeout=10)
+    result = subprocess.run(command, capture_output=True, text=True, timeout=10,
+                            stdin=subprocess.DEVNULL)
     if not result.returncode:
         return
     if not application:
@@ -401,6 +489,7 @@ def open_url(url: str, app: str = "") -> None:
     resolved = _resolve_app_path(application)
     if resolved is None:
         raise RuntimeError(result.stderr.strip() or f"could not open {application}")
-    fallback = subprocess.run(["open", "-a", resolved, value], capture_output=True, text=True, timeout=10)
+    fallback = subprocess.run(["open", "-a", resolved, value], capture_output=True, text=True, timeout=10,
+                              stdin=subprocess.DEVNULL)
     if fallback.returncode:
         raise RuntimeError(fallback.stderr.strip() or f"could not open {value} in {resolved}")
