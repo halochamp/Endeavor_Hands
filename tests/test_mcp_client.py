@@ -89,6 +89,27 @@ class MCPClientTests(unittest.TestCase):
         self.assertTrue(test_backend.prepared_argv)
         self.assertFalse(any("sandbox-exec" in arg for call in test_backend.prepared_argv for arg in call))
 
+    def test_rag_server_call_output_cap_is_20k_only_for_rag(self) -> None:
+        old_cap = mcp_client.MCP_MAX_CHARS
+        mcp_client.MCP_MAX_CHARS = 4_000
+        try:
+            self.assertEqual(mcp_client._call_output_cap("endeavor-rag-max"), 20_000)
+            self.assertEqual(mcp_client._call_output_cap("endmemex"), 4_000)
+            long_text = "x" * 24_000
+            rag_rendered = mcp_client._cap(
+                long_text, max_chars=mcp_client._call_output_cap("endeavor-rag-max")
+            )
+            other_rendered = mcp_client._cap(
+                long_text, max_chars=mcp_client._call_output_cap("endmemex")
+            )
+        finally:
+            mcp_client.MCP_MAX_CHARS = old_cap
+
+        self.assertTrue(rag_rendered.startswith("x" * 20_000))
+        self.assertIn("[truncated at 20000 chars]", rag_rendered)
+        self.assertTrue(other_rendered.startswith("x" * 4_000))
+        self.assertIn("[truncated at 4000 chars]", other_rendered)
+
     def test_cap_tool_lines_preserves_every_tool_name(self) -> None:
         old_cap = mcp_client.MCP_MAX_CHARS
         mcp_client.MCP_MAX_CHARS = 120

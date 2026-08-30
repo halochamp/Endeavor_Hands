@@ -30,6 +30,9 @@ _T = TypeVar("_T")
 _SANDBOX_BACKEND = RealSandboxBackend()
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _WORK_DIR = _PROJECT_ROOT / "work"
+_SERVER_CALL_OUTPUT_CAPS = {
+    "endeavor-rag-max": 20_000,
+}
 
 
 def _inside(path: str, root: str) -> bool:
@@ -109,10 +112,15 @@ def _known_servers() -> str:
     return ", ".join(sorted(_all_servers())) or "(none configured)"
 
 
-def _cap(text: str) -> str:
-    if len(text) <= MCP_MAX_CHARS:
+def _cap(text: str, *, max_chars: int = MCP_MAX_CHARS) -> str:
+    if len(text) <= max_chars:
         return text
-    return text[:MCP_MAX_CHARS] + f"\n...[truncated at {MCP_MAX_CHARS} chars]"
+    return text[:max_chars] + f"\n...[truncated at {max_chars} chars]"
+
+
+def _call_output_cap(server: str) -> int:
+    """Return the call-result cap for one MCP server without widening discovery output."""
+    return _SERVER_CALL_OUTPUT_CAPS.get(server, MCP_MAX_CHARS)
 
 
 def _cap_tool_lines(lines: list[str]) -> str:
@@ -377,9 +385,12 @@ def mcp_call_tool(server: str, tool_name: str, arguments_json: str = "{}") -> st
         )
     try:
         extra_unlink_paths = _trusted_server_unlink_paths(server, cfg)
-        return _cap(_run_async(lambda: _call_tool_async(
-            cfg, tool_name, arguments, extra_unlink_paths=extra_unlink_paths
-        )))
+        return _cap(
+            _run_async(lambda: _call_tool_async(
+                cfg, tool_name, arguments, extra_unlink_paths=extra_unlink_paths
+            )),
+            max_chars=_call_output_cap(server),
+        )
     except Exception as exc:
         return append_diagnostic(
             f"[error] mcp_call_tool failed for '{server}.{tool_name}': {flatten_exception(exc)}",
