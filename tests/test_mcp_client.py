@@ -89,6 +89,52 @@ class MCPClientTests(unittest.TestCase):
         self.assertTrue(test_backend.prepared_argv)
         self.assertFalse(any("sandbox-exec" in arg for call in test_backend.prepared_argv for arg in call))
 
+    def test_cap_tool_lines_preserves_every_tool_name(self) -> None:
+        old_cap = mcp_client.MCP_MAX_CHARS
+        mcp_client.MCP_MAX_CHARS = 120
+        try:
+            lines = [f"tool_{i}: " + ("description " * 20) for i in range(8)]
+            rendered = mcp_client._cap_tool_lines(lines)
+        finally:
+            mcp_client.MCP_MAX_CHARS = old_cap
+        for i in range(8):
+            self.assertIn(f"tool_{i}", rendered)
+        self.assertIn("descriptions compacted", rendered)
+
+    def test_list_tools_compacts_descriptions_without_hiding_names(self) -> None:
+        class Tool:
+            def __init__(self, name: str, description: str):
+                self.name = name
+                self.description = description
+
+        class Session:
+            async def list_tools(self):
+                class Result:
+                    tools = [Tool(f"tool_{i}", "x" * 1000) for i in range(12)]
+                return Result()
+
+        class SessionContext:
+            async def __aenter__(self):
+                return Session()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        old_open = mcp_client._open_session
+        old_cap = mcp_client.MCP_MAX_CHARS
+        mcp_client.MCP_MAX_CHARS = 400
+        try:
+            mcp_client._open_session = lambda _cfg: SessionContext()
+            listed = asyncio.run(mcp_client._list_tools_async({}))
+        finally:
+            mcp_client._open_session = old_open
+            mcp_client.MCP_MAX_CHARS = old_cap
+
+        for i in range(12):
+            self.assertIn(f"tool_{i}:", listed)
+        self.assertLessEqual(len(listed), 400)
+        self.assertIn("descriptions compacted", listed)
+
     def test_stdio_rejects_relative_command_and_cwd_outside_workspace(self) -> None:
         with self.assertRaisesRegex(ValueError, "absolute executable path"):
             mcp_client._normalise_server_config(

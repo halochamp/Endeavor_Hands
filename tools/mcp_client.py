@@ -115,6 +115,39 @@ def _cap(text: str) -> str:
     return text[:MCP_MAX_CHARS] + f"\n...[truncated at {MCP_MAX_CHARS} chars]"
 
 
+def _cap_tool_lines(lines: list[str]) -> str:
+    """Bound list_tools output without hiding any discovered tool name."""
+    if not lines:
+        return "(no tools exposed)"
+    text = "\n".join(lines)
+    if len(text) <= MCP_MAX_CHARS:
+        return text
+
+    parsed: list[tuple[str, str]] = []
+    for line in lines:
+        name, sep, description = line.partition(":")
+        parsed.append((name.strip(), description.strip() if sep else ""))
+
+    marker = "\n...[descriptions compacted to preserve all tool names]"
+    names_only = "\n".join(name for name, _ in parsed)
+    if len(names_only) + len(marker) >= MCP_MAX_CHARS:
+        # Tool discovery is more important than the generic cap. Returning all
+        # names is the only truthful fallback when the names alone exceed it.
+        return names_only + marker
+
+    fixed = sum(len(name) + 2 for name, _ in parsed) + max(0, len(parsed) - 1) + len(marker)
+    description_budget = max(0, MCP_MAX_CHARS - fixed)
+    per_tool = max(0, description_budget // len(parsed))
+    compact: list[str] = []
+    for name, description in parsed:
+        if per_tool and description:
+            clipped = description[:per_tool].rstrip()
+            compact.append(f"{name}: {clipped}")
+        else:
+            compact.append(name)
+    return "\n".join(compact) + marker
+
+
 def _normalise_server_config(cfg: dict) -> dict:
     if not isinstance(cfg, dict):
         raise ValueError("MCP server configuration must be an object")
@@ -220,8 +253,36 @@ async def _open_session(cfg: dict):
 async def _list_tools_async(cfg: dict) -> str:
     async with _open_session(cfg) as session:
         result = await session.list_tools()
-    lines = [f"{t.name}: {t.description or '(no description)'}" for t in result.tools]
-    return "\n".join(lines) if lines else "(no tools exposed)"
+    tools = list(result.tools)
+    if not tools:
+        return "(no tools exposed)"
+
+    # Preserve discoverability under the global MCP response cap. A raw
+    # description-first truncation can hide tools that appear later in the
+    # server's list, leaving callers unable to discover their names at all.
+    # Reserve a compact line for every tool first, then spend any remaining
+    # budget on description detail without ever dropping a tool name.
+    reserve = sum(len(t.name) + 3 for t in tools) + max(0, len(tools) - 1)
+    detail_budget = max(0, MCP_MAX_CHARS - reserve - 64)
+    per_tool = detail_budget // len(tools) if tools else 0
+    lines: list[str] = []
+    clipped = False
+    for tool in tools:
+        description = tool.description or "(no description)"
+        if per_tool and len(description) > per_tool:
+            description = description[: max(0, per_tool - 1)].rstrip() + "…"
+            clipped = True
+        elif not per_tool and description:
+            description = ""
+            clipped = True
+        suffix = f": {description}" if description else ":"
+        lines.append(f"{tool.name}{suffix}")
+    text = "\n".join(lines)
+    if clipped:
+        note = "\n[descriptions compacted so every tool name remains visible]"
+        if len(text) + len(note) <= MCP_MAX_CHARS:
+            text += note
+    return text
 
 
 async def _call_tool_async(cfg: dict, tool_name: str, arguments: dict) -> str:
@@ -247,7 +308,8 @@ def mcp_list_tools(server: str) -> str:
             Diagnostic("tool_validation", "mcp", False),
         )
     try:
-        return _cap(_run_async(lambda: _list_tools_async(cfg)))
+        listed = _run_async(lambda: _list_tools_async(cfg))
+        return _cap_tool_lines(listed.splitlines())
     except Exception as exc:
         return append_diagnostic(
             f"[error] mcp_list_tools failed for '{server}': {flatten_exception(exc)}",
