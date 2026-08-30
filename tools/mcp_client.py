@@ -148,6 +148,40 @@ def _cap_tool_lines(lines: list[str]) -> str:
     return "\n".join(compact) + marker
 
 
+def _trusted_server_unlink_paths(server: str, cfg: dict) -> tuple[str, ...]:
+    """Return narrowly scoped unlink capability for trusted developer MCPs.
+
+    Dynamic MCP registration must never be able to request arbitrary unlink
+    privileges.  The only current exception is the local RAG server, whose
+    Chroma/SQLite backend may need to remove its rollback journal during an
+    otherwise read-only retrieval.  Grant that capability only when the
+    registered server name and entry point match ``<cwd>/mcp_server.py``.
+    """
+    if server != "endeavor-rag-max":
+        return ()
+    try:
+        normalised = _normalise_server_config(cfg)
+    except (OSError, ValueError):
+        return ()
+    if normalised.get("transport") != "stdio":
+        return ()
+    args = normalised.get("args") or []
+    if not args:
+        return ()
+    cwd = Path(normalised["cwd"]).resolve()
+    entry = Path(os.path.realpath(os.path.expanduser(args[0])))
+    expected_entry = (cwd / "mcp_server.py").resolve()
+    if entry != expected_entry:
+        return ()
+    chroma_dir = (cwd / "data" / "chroma").resolve()
+    try:
+        if os.path.commonpath((str(chroma_dir), str(cwd))) != str(cwd):
+            return ()
+    except ValueError:
+        return ()
+    return (str(chroma_dir),)
+
+
 def _normalise_server_config(cfg: dict) -> dict:
     if not isinstance(cfg, dict):
         raise ValueError("MCP server configuration must be an object")
@@ -217,7 +251,7 @@ def _run_async(factory: Callable[[], Coroutine[object, object, _T]]) -> _T:
 
 
 @asynccontextmanager
-async def _open_session(cfg: dict):
+async def _open_session(cfg: dict, *, extra_unlink_paths: tuple[str, ...] = ()):
     from mcp import ClientSession
 
     cfg = _normalise_server_config(cfg)
@@ -233,7 +267,7 @@ async def _open_session(cfg: dict):
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
     _WORK_DIR.mkdir(parents=True, exist_ok=True)
-    profile = build_sandbox_profile(WORKSPACE)
+    profile = build_sandbox_profile(WORKSPACE, extra_unlink_paths=extra_unlink_paths)
     with _SANDBOX_BACKEND.prepare(
         [cfg["command"], *cfg["args"]],
         profile=profile,
@@ -250,8 +284,8 @@ async def _open_session(cfg: dict):
                 yield session
 
 
-async def _list_tools_async(cfg: dict) -> str:
-    async with _open_session(cfg) as session:
+async def _list_tools_async(cfg: dict, *, extra_unlink_paths: tuple[str, ...] = ()) -> str:
+    async with _open_session(cfg, extra_unlink_paths=extra_unlink_paths) as session:
         result = await session.list_tools()
     tools = list(result.tools)
     if not tools:
@@ -285,8 +319,10 @@ async def _list_tools_async(cfg: dict) -> str:
     return text
 
 
-async def _call_tool_async(cfg: dict, tool_name: str, arguments: dict) -> str:
-    async with _open_session(cfg) as session:
+async def _call_tool_async(
+    cfg: dict, tool_name: str, arguments: dict, *, extra_unlink_paths: tuple[str, ...] = ()
+) -> str:
+    async with _open_session(cfg, extra_unlink_paths=extra_unlink_paths) as session:
         result = await session.call_tool(tool_name, arguments)
     parts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
     body = "\n".join(parts) if parts else "(tool returned no text content)"
@@ -308,7 +344,8 @@ def mcp_list_tools(server: str) -> str:
             Diagnostic("tool_validation", "mcp", False),
         )
     try:
-        listed = _run_async(lambda: _list_tools_async(cfg))
+        extra_unlink_paths = _trusted_server_unlink_paths(server, cfg)
+        listed = _run_async(lambda: _list_tools_async(cfg, extra_unlink_paths=extra_unlink_paths))
         return _cap_tool_lines(listed.splitlines())
     except Exception as exc:
         return append_diagnostic(
@@ -339,7 +376,10 @@ def mcp_call_tool(server: str, tool_name: str, arguments_json: str = "{}") -> st
             Diagnostic("tool_validation", "mcp", False),
         )
     try:
-        return _cap(_run_async(lambda: _call_tool_async(cfg, tool_name, arguments)))
+        extra_unlink_paths = _trusted_server_unlink_paths(server, cfg)
+        return _cap(_run_async(lambda: _call_tool_async(
+            cfg, tool_name, arguments, extra_unlink_paths=extra_unlink_paths
+        )))
     except Exception as exc:
         return append_diagnostic(
             f"[error] mcp_call_tool failed for '{server}.{tool_name}': {flatten_exception(exc)}",

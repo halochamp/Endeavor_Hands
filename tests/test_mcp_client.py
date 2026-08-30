@@ -120,11 +120,16 @@ class MCPClientTests(unittest.TestCase):
             async def __aexit__(self, exc_type, exc, tb):
                 return False
 
+        async def fake_open_session(_cfg):
+            return SessionContext()
+
         old_open = mcp_client._open_session
         old_cap = mcp_client.MCP_MAX_CHARS
         mcp_client.MCP_MAX_CHARS = 400
         try:
-            mcp_client._open_session = lambda _cfg: SessionContext()
+            # _open_session is an async context-manager factory; provide one
+            # directly rather than starting a real MCP subprocess.
+            mcp_client._open_session = lambda _cfg, **_kwargs: SessionContext()
             listed = asyncio.run(mcp_client._list_tools_async({}))
         finally:
             mcp_client._open_session = old_open
@@ -134,6 +139,33 @@ class MCPClientTests(unittest.TestCase):
             self.assertIn(f"tool_{i}:", listed)
         self.assertLessEqual(len(listed), 400)
         self.assertIn("descriptions compacted", listed)
+
+    def test_trusted_rag_unlink_capability_is_narrow_and_entrypoint_bound(self) -> None:
+        rag_root = self.workspace / "ENDEAVOR_RAG_MAX"
+        chroma_dir = rag_root / "data" / "chroma"
+        chroma_dir.mkdir(parents=True)
+        entry = rag_root / "mcp_server.py"
+        entry.write_text("# fake rag mcp entry\n", encoding="utf-8")
+        cfg = {
+            "transport": "stdio",
+            "command": sys.executable,
+            "args": [str(entry)],
+            "cwd": str(rag_root),
+        }
+
+        allowed = mcp_client._trusted_server_unlink_paths("endeavor-rag-max", cfg)
+        self.assertEqual(allowed, (str(chroma_dir.resolve()),))
+        profile = mcp_client.build_sandbox_profile(
+            str(self.workspace), extra_unlink_paths=allowed
+        )
+        self.assertIn(f'(subpath "{chroma_dir.resolve()}")', profile)
+
+        self.assertEqual(mcp_client._trusted_server_unlink_paths("some-other-server", cfg), ())
+        wrong_entry = dict(cfg)
+        wrong_entry["args"] = [str(rag_root / "other.py")]
+        self.assertEqual(
+            mcp_client._trusted_server_unlink_paths("endeavor-rag-max", wrong_entry), ()
+        )
 
     def test_stdio_rejects_relative_command_and_cwd_outside_workspace(self) -> None:
         with self.assertRaisesRegex(ValueError, "absolute executable path"):
