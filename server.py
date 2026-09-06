@@ -691,6 +691,7 @@ def mcp_list_tools(server: str) -> str:
 def mcp_call_tool(server: str, tool_name: str, arguments_json: str = "{}") -> str:
     """Call a tool exposed by a configured HTTP or local stdio MCP server.
     Run mcp_list_tools first to see available tool names and confirm what arguments they expect.
+    Call results use the shared Hands MCP response cap, up to 30,000 characters.
     Args:
         server: name of the server, as registered via mcp_add_server or config.MCP_SERVERS
         tool_name: exact tool name returned by mcp_list_tools

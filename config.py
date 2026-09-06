@@ -27,7 +27,7 @@ READ_FILE_AUDIO_VIDEO_MAX_DURATION_SEC = int(os.getenv("V2_READ_FILE_AUDIO_VIDEO
 #   MCP_SERVERS = {"worldmonitor": {"url": "https://worldmonitor.app/mcp",
 #                                    "headers": {"X-WorldMonitor-Key": os.getenv("WORLDMONITOR_API_KEY", "")}}}
 MCP_SERVERS: dict[str, dict] = {}
-MCP_MAX_CHARS = int(os.getenv("V2_MCP_MAX_CHARS", "4000"))
+MCP_MAX_CHARS = min(max(int(os.getenv("V2_MCP_MAX_CHARS", "30000")), 1), 30_000)
 MCP_TIMEOUT = int(os.getenv("V2_MCP_TIMEOUT", "60"))  # seconds per list_tools/call_tool round trip
 
 # ── Activity logging (agent_log.AgentLogger) ──────────────────────────────

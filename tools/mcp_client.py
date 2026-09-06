@@ -30,9 +30,6 @@ _T = TypeVar("_T")
 _SANDBOX_BACKEND = RealSandboxBackend()
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _WORK_DIR = _PROJECT_ROOT / "work"
-_SERVER_CALL_OUTPUT_CAPS = {
-    "endeavor-rag-max": 20_000,
-}
 
 
 def _inside(path: str, root: str) -> bool:
@@ -119,8 +116,8 @@ def _cap(text: str, *, max_chars: int = MCP_MAX_CHARS) -> str:
 
 
 def _call_output_cap(server: str) -> int:
-    """Return the call-result cap for one MCP server without widening discovery output."""
-    return _SERVER_CALL_OUTPUT_CAPS.get(server, MCP_MAX_CHARS)
+    """Return the shared MCP call-result cap."""
+    return MCP_MAX_CHARS
 
 
 def _cap_tool_lines(lines: list[str]) -> str:
