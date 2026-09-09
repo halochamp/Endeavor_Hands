@@ -1,8 +1,10 @@
 from __future__ import annotations
+import os
 import subprocess
 from tools._truncate import truncate_with_save
 from tools._diagnostics import Diagnostic, append_diagnostic, classify_exception, classify_process_failure, flatten_exception
 from tools._sandbox import RealSandboxBackend, build_sandbox_profile
+from tools._safe_move_capability import trusted_safe_move_invocation
 
 _SANDBOX_BACKEND = RealSandboxBackend()
 
@@ -35,13 +37,29 @@ def _bash_impl(command: str, timeout: int = 30) -> str:
         return ""
 
     try:
-        profile = _build_sandbox_profile(WORKSPACE)
+        move_capability = trusted_safe_move_invocation(command, WORKSPACE)
+        if move_capability is not None:
+            argv = list(move_capability.argv)
+            profile = _build_sandbox_profile(
+                WORKSPACE,
+                extra_unlink_paths=move_capability.source_paths,
+            )
+        else:
+            argv = ["bash", "-c", command]
+            profile = _build_sandbox_profile(WORKSPACE)
+
+        child_env = os.environ.copy()
+        # Keep Python/import bytecode and compile caches out of the user workspace.
+        # Python commonly installs .pyc files via atomic rename, which macOS Seatbelt
+        # classifies as file-write-unlink just like deletion.
+        child_env["PYTHONPYCACHEPREFIX"] = f"/private/tmp/endeavor-hands-pycache-{os.getuid()}"
         try:
             result = _SANDBOX_BACKEND.run(
-                ["bash", "-c", command],
+                argv,
                 profile=profile,
                 capture_output=True, text=True,
                 timeout=timeout, cwd=WORKSPACE, stdin=subprocess.DEVNULL,
+                env=child_env,
             )
         except subprocess.TimeoutExpired as e:
             # Return what ran before the timeout instead of discarding it — a command that

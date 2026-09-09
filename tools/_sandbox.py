@@ -26,7 +26,12 @@ def build_sandbox_profile(
     home = os.path.expanduser("~")
     extra = "".join(f' (subpath "{os.path.realpath(p)}")' for p in extra_write_paths)
     extra_read = "".join(f' (subpath "{os.path.realpath(p)}")' for p in extra_read_paths)
-    extra_unlink = "".join(f' (subpath "{os.path.realpath(p)}")' for p in extra_unlink_paths)
+    # Unlink capability leaves stay lexical: resolving them here could grant
+    # permission to a symlink target instead of the directory entry being moved.
+    extra_unlink = "".join(
+        f' (subpath "{os.path.normpath(os.path.abspath(os.path.expanduser(p)))}")'
+        for p in extra_unlink_paths
+    )
     return f"""(version 1)
 (allow default)
 

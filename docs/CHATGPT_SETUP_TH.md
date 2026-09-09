@@ -154,7 +154,7 @@ http://127.0.0.1:8765/ui
 ## ขอบเขตและความปลอดภัย
 
 - `V2_WORKSPACE` ถูกตั้งเป็น `~/Desktop`: อ่าน, สร้าง และแก้ไขไฟล์ภายใต้ Desktop ได้
-- การลบไฟล์ถูกปิดไว้: shell/Python sandbox ปฏิเสธการ remove/unlink และ computer tool ปฏิเสธ UI action ที่สื่อถึงการลบ
+- การลบไฟล์ถูกปิดไว้: shell/Python sandbox ปฏิเสธการ remove/unlink และ computer tool ปฏิเสธ UI action ที่สื่อถึงการลบ; `bash` อนุญาตเฉพาะ `mv [-n] [-v] SOURCE... DEST` แบบ standalone ภายใน workspace ที่ไม่ทับปลายทาง โดยเปิด unlink เฉพาะ source path ที่ย้าย
 - การลบบรรทัดหรือแทนที่เนื้อหาในไฟล์ผ่าน `edit` ยังทำได้ เพราะเป็นการแก้เนื้อหา ไม่ใช่ลบไฟล์ — แต่ต้องผ่าน permission gate ด้านบนก่อน
 - runtime API key อยู่ใน Keychain เท่านั้น; ไม่อยู่ใน launcher, profile หรือ source code
 - อย่าส่ง runtime API key, รหัสผ่าน, OTP หรือข้อมูลบัตรเข้า ChatGPT

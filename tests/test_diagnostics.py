@@ -45,6 +45,34 @@ class DiagnosticsTests(unittest.TestCase):
         assert diagnostic is not None
         self.assertEqual(diagnostic.code, "sandbox_policy_denied")
 
+    def test_move_sandbox_denial_explains_safe_mv_boundary(self) -> None:
+        diagnostic = classify_process_failure(
+            1,
+            "mv: rename source to dest: Operation not permitted",
+            command="/bin/mv source dest",
+            workspace="/workspace",
+        )
+        self.assertIsNotNone(diagnostic)
+        assert diagnostic is not None
+        self.assertEqual(diagnostic.code, "sandbox_policy_denied")
+        self.assertIn("move/rename can be blocked", diagnostic.hint)
+        self.assertIn("`mv [-n] [-v] SOURCE... DEST`", diagnostic.hint)
+        self.assertIn("does not replace an existing destination", diagnostic.hint)
+        self.assertIn("Python rename/replace remains", diagnostic.hint)
+
+    def test_python_unlink_sandbox_denial_keeps_delete_guard(self) -> None:
+        diagnostic = classify_process_failure(
+            1,
+            "PermissionError: [Errno 1] Operation not permitted",
+            command='from pathlib import Path\nPath("file.txt").unlink()',
+            workspace="/workspace",
+        )
+        self.assertIsNotNone(diagnostic)
+        assert diagnostic is not None
+        self.assertEqual(diagnostic.code, "sandbox_policy_denied")
+        self.assertIn("file deletion is intentionally blocked", diagnostic.hint)
+        self.assertIn("do not retry", diagnostic.hint)
+
     def test_explicit_sandbox_exec_permission_denial_is_policy_denied(self) -> None:
         diagnostic = classify_process_failure(1, "sandbox-exec: deny: Permission denied")
         self.assertEqual(diagnostic.code, "sandbox_policy_denied")  # type: ignore[union-attr]

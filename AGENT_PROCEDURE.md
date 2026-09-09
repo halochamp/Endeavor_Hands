@@ -58,6 +58,8 @@ For filesystem/shell changes, verify:
 - temporary/test paths are controlled;
 - errors do not expose secrets;
 - deletion/destructive filesystem commands remain refused where documented;
+- the narrow safe-move exception stays standalone, in-workspace, no-clobber, and grants unlink only to exact source path(s);
+- Python bytecode/compile cache stays outside the workspace so normal tests/imports do not require broader unlink permission;
 - timeout/bounded-output behavior remains intact.
 
 Do not add a shell escape or alternate execution path that bypasses the same protection enforced by a dedicated tool.

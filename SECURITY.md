@@ -32,7 +32,9 @@ privately, and coordinate disclosure after a fix is available.
 - **File deletion is disabled everywhere.** `bash`/`python_exec` refuse
   `rm`/`unlink`-class operations, and `computer` refuses UI actions that
   read as delete/remove. This is enforced in code, not left to the model's
-  judgment.
+  judgment. A narrow exception exists only for standalone in-workspace
+  `mv [-n] [-v] SOURCE... DEST` when no existing destination would be
+  replaced: the sandbox grants unlink only to the exact source path(s).
 - **Existing-file modification needs a session grant.** The first `edit`
   call, or `write_file` with `overwrite=true` on a file that already
   exists, targeting a given top-level workspace folder fails with
@@ -50,7 +52,10 @@ privately, and coordinate disclosure after a fix is available.
   `edit`/`write_file` redirect to a sibling `name.edited.ext` working copy;
   the original is untouched.
 - **`bash`/`bash_bg`/`python_exec` run inside a sandbox profile** scoped to
-  the workspace directory, and are explicitly *not* covered by the
+  the workspace directory. `bash` may receive the narrow safe-move capability
+  described above; `python_exec` redirects Python bytecode/compile caches to
+  `/private/tmp` so normal imports/tests do not need workspace unlink. They are
+  explicitly *not* covered by the
   `edit`/`write_file` permission gate above — a model could still write
   files via shell redirection without triggering that gate. This is a known,
   accepted trade-off (narrower friction on the two tools most likely to
@@ -98,7 +103,9 @@ shell, รัน Python, อ่าน/เขียน/แก้ไฟล์, แ
   นี้เอง) ที่ถูกปฏิเสธเสมอไม่ว่า `V2_WORKSPACE` จะตั้งเป็นอะไร
 - **การลบไฟล์ถูกปิดไว้ทุกที่** `bash`/`python_exec` ปฏิเสธคำสั่งประเภท
   `rm`/`unlink` และ `computer` ปฏิเสธ UI action ที่อ่านได้ว่าเป็นการ
-  ลบ/ทำลาย บังคับในโค้ด ไม่ปล่อยให้โมเดลตัดสินใจเอง
+  ลบ/ทำลาย บังคับในโค้ด ไม่ปล่อยให้โมเดลตัดสินใจเอง ข้อยกเว้นแคบมีเฉพาะ
+  `mv [-n] [-v] SOURCE... DEST` แบบ standalone ภายใน workspace และต้องไม่
+  ทับปลายทางเดิม โดย sandbox เปิด unlink เฉพาะ source path ที่ย้ายเท่านั้น
 - **การแก้ไฟล์เดิมต้องได้รับอนุญาตในระดับ session** การเรียก `edit` หรือ
   `write_file` แบบ `overwrite=true` บนไฟล์ที่มีอยู่แล้ว ครั้งแรกที่แตะ
   โฟลเดอร์ระดับบนสุดในแต่ละ session จะ fail ด้วย `[permission_required]`
@@ -113,7 +120,10 @@ shell, รัน Python, อ่าน/เขียน/แก้ไฟล์, แ
 - **นอก `~/Desktop` ไฟล์เดิมจะไม่ถูกแก้ในที่เดิมเลย** `edit`/`write_file`
   จะ redirect ไปแก้ที่สำเนา `name.edited.ext` ข้างๆ — ต้นฉบับไม่ถูกแตะ
 - **`bash`/`bash_bg`/`python_exec` รันใน sandbox profile** ที่จำกัดใน
-  workspace และ**ไม่ได้อยู่ใน**ขอบเขตของ permission gate ของ
+  workspace โดย `bash` เปิดสิทธิ์เฉพาะ safe `mv` ตามกฎด้านบน และ
+  `python_exec` ย้าย Python bytecode/compile cache ไป `/private/tmp` เพื่อไม่
+  ต้องเปิด workspace unlink สำหรับ import/test ปกติ ทั้งสาม tool **ไม่ได้อยู่ใน**
+  ขอบเขตของ permission gate ของ
   `edit`/`write_file` ด้านบนอย่างชัดเจน — โมเดลยังเขียนไฟล์ผ่าน shell
   redirection ได้โดยไม่ต้องผ่าน gate นั้น นี่คือ trade-off ที่รู้และ
   ยอมรับไว้แล้ว (เลือก friction แคบเฉพาะ 2 tool ที่เสี่ยงทำลายไฟล์เดิม

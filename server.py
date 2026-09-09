@@ -163,9 +163,9 @@ python_exec for Python analysis, and computer for visible Mac app interaction. T
 
 For read-only requests, do not modify files. For requested changes, work only within the user's stated
 scope, verify relevant results with an appropriate Endeavor tool, and report the files changed. Files may
-be created or edited, but must never be deleted; do not use deletion commands, delete/remove UI actions,
-or destructive cleanup. If a request needs a credential, payment, or irreversible action, ask the user to
-perform or approve it explicitly.""",
+be created, edited, or safely renamed/moved with bash's standalone in-workspace no-clobber `mv`, but must
+never be deleted; do not use deletion commands, delete/remove UI actions, or destructive cleanup. If a
+request needs a credential, payment, or irreversible action, ask the user to perform or approve it explicitly.""",
 )
 
 
@@ -204,6 +204,12 @@ def bash(command: str, timeout: int = 30) -> str:
     re-prefix "workspace/" onto the output path (writes one level too deep).
       ❌ screencapture workspace/shot.png  -> lands at workspace/workspace/shot.png
       ✅ screencapture shot.png            -> lands at workspace/shot.png
+
+    FILE MUTATION — deletion remains fail-closed. Bash supports a narrow safe move/rename form:
+    `mv [-n] [-v] SOURCE... DEST` as a standalone command, with every path inside the workspace and
+    with no existing destination replaced. The sandbox grants unlink only to those exact source path(s),
+    so ordinary deletion is still denied. Split setup/verification into separate bash calls instead of
+    composing shell around `mv`. Python rename/replace remains guarded.
 
     Output cap: output over 10,000 chars is truncated; the FULL output is saved to a workspace file
     whose path is in the leading "[bash] truncated: ..." marker.
@@ -303,7 +309,9 @@ def python_exec(code: str, timeout: int = 120, max_chars: int = 10_000) -> str:
       Errors: a traceback prints under an "[stderr]" header; a crash with zero stdout instead returns
       "[error] exited <code>, no output". Common errors (ModuleNotFoundError, FileNotFoundError,
       KeyError, UnicodeDecodeError, SyntaxError) also get a one-line "[hint]" — read it before retrying.
-      A hint can list more than one option — if the FIRST fails, try the NEXT before giving up.
+      Sandbox-denied deletion/rename attempts get operation-specific hints. Deletion remains blocked.
+      Bash has a separate standalone in-workspace no-clobber `mv`; Python rename/replace remains under
+      the ordinary unlink guard. A hint can list more than one option — if the FIRST fails, try the NEXT.
 
     LIBRARIES available: pandas, numpy, matplotlib, scipy, scikit-learn, statsmodels.
 

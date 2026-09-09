@@ -77,10 +77,10 @@ full detail behind each one.
 
 | Tool | What it does | Guardrail |
 |---|---|---|
-| `bash` | Run a shell command | Runs inside a sandbox profile scoped to the workspace; file-deletion commands are refused |
+| `bash` | Run a shell command | Runs inside a sandbox profile scoped to the workspace; deletion stays refused; standalone in-workspace no-clobber `mv` gets unlink permission only for its exact source path(s) |
 | `git` | Guarded repository operations (`status`, `diff`, explicit-path `add`, `commit`, non-force `push`) | Repository must be inside the approved workspace; mutation is scoped to Git metadata; hooks/signing and unsafe transports are disabled; stale non-empty `index.lock` recovery requires a parseable Git index; HTTPS credentials are read directly from the trusted macOS Keychain helper without enabling shell-based helpers |
 | `bash_bg` | Start/poll/kill a background shell job | Same sandbox as `bash`; registry and logs live under `Endeavor_Hands/work/` |
-| `python_exec` | Run Python code with the server's own interpreter | Same sandbox as `bash` |
+| `python_exec` | Run Python code with the server's own interpreter | Same deletion guard as `bash`; Python bytecode/compile cache is redirected to `/private/tmp` so normal imports/tests do not require workspace unlink |
 | `read_file` | Read text, code, PDF/Word/Excel, images, audio/video | Reads anywhere except a fixed list of protected system/credential paths |
 | `write_file` | Create a new file, or replace one with `overwrite=true` | Outside the workspace, an existing file is never replaced in place (goes to a `name.edited.ext` copy instead); replacing an existing file needs the same permission gate as `edit` |
 | `edit` | Make a targeted change to an existing file | **Needs the user's explicit one-time permission per top-level workspace folder, each session** (`[permission_required]` + a one-time code the model must relay to you) |
@@ -107,7 +107,9 @@ calls to the server or its tools.
   A path in none of those lists — say a folder you created in your home
   directory — remains writable.
 - **File deletion is disabled everywhere** — enforced in code, not left to
-  the model's judgment.
+  the model's judgment. A standalone in-workspace `mv [-n] [-v] SOURCE... DEST`
+  is allowed only when it cannot replace an existing destination; the sandbox
+  grants unlink only to the exact source path(s) needed for that move.
 - **Modifying an existing file needs your explicit yes, once per folder,
   per session.** The model cannot silently start editing a folder you
   haven't approved.
@@ -360,10 +362,10 @@ Server เปิด MCP tool 12 ตัว ทุกตัวที่แก้�
 
 | Tool | ทำอะไร | Guardrail |
 |---|---|---|
-| `bash` | รันคำสั่ง shell | รันใน sandbox profile จำกัดใน workspace; คำสั่งลบไฟล์ถูกปฏิเสธ |
+| `bash` | รันคำสั่ง shell | รันใน sandbox profile จำกัดใน workspace; การลบยังถูกปฏิเสธ; `mv` แบบ standalone ภายใน workspace ที่ไม่ทับปลายทางจะได้สิทธิ์ unlink เฉพาะ source path ที่ย้าย |
 | `git` | ทำงานกับ repository แบบ guarded (`status`, `diff`, `add` ระบุ path, `commit`, `push` แบบไม่ force) | repo ต้องอยู่ใน workspace ที่อนุมัติ; สิทธิ์ mutation จำกัดที่ Git metadata; ปิด hook/signing และ transport ที่ไม่ปลอดภัย; การกู้ `index.lock` แบบ non-empty ต้องเป็น Git index ที่ parse ได้; HTTPS อ่าน credential โดยตรงจาก trusted macOS Keychain helper โดยไม่เปิด shell-based helper |
 | `bash_bg` | เริ่ม/ตรวจสอบ/ปิด background job | sandbox เดียวกับ `bash`; registry และ log อยู่ใต้ `Endeavor_Hands/work/` |
-| `python_exec` | รัน Python ด้วย interpreter ของ server เอง | sandbox เดียวกับ `bash` |
+| `python_exec` | รัน Python ด้วย interpreter ของ server เอง | ใช้ deletion guard เดียวกับ `bash`; ย้าย Python bytecode/compile cache ไป `/private/tmp` เพื่อให้ import/test ปกติไม่ต้องขอ workspace unlink |
 | `read_file` | อ่านข้อความ, โค้ด, PDF/Word/Excel, รูปภาพ, เสียง/วิดีโอ | อ่านได้ทุกที่ ยกเว้น path ระบบ/credential ที่กำหนดไว้ตายตัว |
 | `write_file` | สร้างไฟล์ใหม่ หรือแทนที่ทั้งไฟล์ด้วย `overwrite=true` | นอก workspace ไฟล์เดิมจะไม่ถูกแทนที่ตรงๆ (ไปแก้ที่สำเนา `name.edited.ext` แทน); การแทนที่ไฟล์เดิมต้องผ่าน permission gate เดียวกับ `edit` |
 | `edit` | แก้ไฟล์เดิมเฉพาะจุด | **ต้องได้รับอนุญาตจากผู้ใช้ครั้งเดียวต่อโฟลเดอร์ระดับบนสุด ในแต่ละ session** (`[permission_required]` พร้อมรหัสครั้งเดียวที่โมเดลต้องส่งมาให้คุณยืนยัน) |

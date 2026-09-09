@@ -38,6 +38,67 @@ def append_diagnostic(text: str, diagnostic: Diagnostic | None) -> str:
     return f"{text.rstrip()}\n{suffix}"
 
 
+def _sandbox_recovery_hint(command: str, workspace: str) -> str:
+    """Return an operation-specific recovery hint without weakening policy."""
+    cmd = (command or "").strip()
+    low = cmd.casefold()
+    workspace_note = (
+        f" Ordinary shell writes are limited to workspace/ ({workspace}) and /tmp."
+        if workspace
+        else ""
+    )
+
+    shell_delete = re.search(
+        r"(?:^|[;&|()]|\s)(?:[^\s;&|()]*/)?(?:rm|unlink|rmdir|trash)(?:\s|$)",
+        low,
+    )
+    python_delete = any(
+        marker in low
+        for marker in (
+            ".unlink(",
+            "os.unlink(",
+            "os.remove(",
+            "shutil.rmtree(",
+        )
+    )
+    if shell_delete or python_delete:
+        return (
+            "file deletion is intentionally blocked by Endeavor Hands; do not retry with a different "
+            "shell/Python deletion form to bypass the guard."
+            + workspace_note
+        )
+
+    shell_move = re.search(
+        r"(?:^|[;&|()]|\s)(?:[^\s;&|()]*/)?(?:mv|rename)(?:\s|$)",
+        low,
+    )
+    python_move = any(
+        marker in low
+        for marker in (
+            ".rename(",
+            ".replace(",
+            "os.rename(",
+            "os.replace(",
+            "shutil.move(",
+        )
+    )
+    if shell_move or python_move:
+        return (
+            "move/rename can be blocked by the ordinary unlink guard; bash supports only a standalone "
+            "in-workspace `mv [-n] [-v] SOURCE... DEST` that does not replace an existing destination. "
+            "Shell composition, outside-workspace moves, and clobbering remain blocked. Split setup and "
+            "verification into separate calls, then retry the safe `mv` alone. Python rename/replace "
+            "remains under the ordinary unlink guard."
+            + workspace_note
+        )
+
+    return "operation denied by the sandbox policy;" + (
+        f" ordinary shell writes are limited to workspace/ ({workspace}) and /tmp"
+        if workspace
+        else " check the active filesystem boundary"
+    )
+
+
 def classify_process_failure(
     returncode: int,
     stderr: str,
@@ -88,7 +149,7 @@ def classify_process_failure(
             "sandbox_policy_denied",
             "sandbox",
             False,
-            "sandbox-exec rejected this operation under the active production policy",
+            _sandbox_recovery_hint(command, workspace),
             returncode,
         )
     if "-10004" in err or ("osascript" in command and "System Events" in command):
@@ -108,10 +169,13 @@ def classify_process_failure(
             returncode,
         )
     if any(marker in err for marker in ("Operation not permitted", "Read-only file system")):
-        hint = "operation denied by the sandbox policy"
-        if workspace:
-            hint += f"; ordinary shell writes are limited to workspace/ ({workspace}) and /tmp"
-        return Diagnostic("sandbox_policy_denied", "sandbox", False, hint, returncode)
+        return Diagnostic(
+            "sandbox_policy_denied",
+            "sandbox",
+            False,
+            _sandbox_recovery_hint(command, workspace),
+            returncode,
+        )
     return Diagnostic("process_exit_nonzero", "process", False, exit_code=returncode)
 
 

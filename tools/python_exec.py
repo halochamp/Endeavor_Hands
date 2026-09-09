@@ -76,6 +76,11 @@ def _python_exec_impl(code: str, timeout: int = _TIMEOUT_DEFAULT, max_chars: int
         script.write_text(code, encoding="utf-8")
         try:
             try:
+                child_env = os.environ.copy()
+                # Keep import/bytecode cache atomics out of the user workspace.
+                # This preserves the workspace unlink/delete guard while allowing
+                # normal Python execution, imports, tests, and py_compile.
+                child_env["PYTHONPYCACHEPREFIX"] = f"/private/tmp/endeavor-hands-pycache-{os.getuid()}"
                 proc = _SANDBOX_BACKEND.run(
                     # -u: unbuffered stdout — without it, Python block-buffers stdout (~8KB)
                     # when writing to a pipe (not a tty), so a script killed mid-run on
@@ -86,6 +91,7 @@ def _python_exec_impl(code: str, timeout: int = _TIMEOUT_DEFAULT, max_chars: int
                     profile=profile,
                     capture_output=True, text=True,
                     timeout=timeout, cwd=WORKSPACE, stdin=subprocess.DEVNULL,
+                    env=child_env,
                 )
             except subprocess.TimeoutExpired as e:
                 # e.stdout/e.stderr come back as bytes here even with text=True (subprocess
@@ -122,7 +128,7 @@ def _python_exec_impl(code: str, timeout: int = _TIMEOUT_DEFAULT, max_chars: int
             if hint:
                 out += f"\n[hint] {hint}"
         diagnostic = classify_process_failure(
-            proc.returncode, proc.stderr or "", workspace=WORKSPACE,
+            proc.returncode, proc.stderr or "", command=code, workspace=WORKSPACE,
         )
         if proc.returncode != 0 and not out.strip():
             return append_diagnostic(
