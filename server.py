@@ -723,8 +723,11 @@ def mcp_add_server(
     HTTP: provide `url` plus optional `headers_json`.
     stdio: provide an absolute executable `command`, optional JSON-array `args_json`, and optional
     `cwd` inside the approved workspace. Exactly one of url or command is required. stdio servers
-    are launched directly without a shell and under Hands' sandbox. Registrations persist under
-    Endeavor_Hands/work/tool_mcp/.
+    are launched directly without a shell and under Hands' sandbox. The only exception is an exact
+    developer-trusted `endeavor-agents.endeavor_agent_start` request with target=codex: only that
+    start skips the outer Hands subprocess sandbox so managed Codex can apply its own sandbox
+    without macOS nested-sandbox failure. Developer-provisioned server names cannot be overridden
+    by dynamic registration. Registrations persist under Endeavor_Hands/work/tool_mcp/.
     """
     return _mcp_add_server_tool.func(
         name=name,

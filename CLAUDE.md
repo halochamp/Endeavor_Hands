@@ -9,7 +9,7 @@
 - Preserve `computer` safety: fresh observation before action, Accessibility requirement, password/secure-field refusal, destructive-action refusal, and post-action verification.
 - Do not re-enable raw coordinate control as a shortcut around element/fresh-observation safety.
 - Guarded Git mutations must stay scoped to the dedicated `git` tool; do not route Git mutation through shell as a workaround.
-- Dynamic MCP stdio servers must use direct argv/no shell and remain sandboxed; do not turn the bridge into arbitrary command execution.
+- Dynamic MCP stdio servers must use direct argv/no shell and remain sandboxed. The only outer-sandbox bypass is the exact developer-provisioned `endeavor-agents.endeavor_agent_start` call with `target=codex`; dynamic registrations cannot override developer-provisioned trust-root names. Do not turn the bridge into arbitrary command execution.
 - Model-facing tool descriptions live in the `@mcp.tool()` functions exposed by `server.py`; runtime descriptions and implementation must remain consistent.
 - Standard deterministic regression suite: `python3 -m unittest discover -s tests -v`.
 - Never weaken a guardrail merely to make a test or workflow easier.

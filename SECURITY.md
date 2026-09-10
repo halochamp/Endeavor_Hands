@@ -62,6 +62,14 @@ privately, and coordinate disclosure after a fix is available.
   clobber a file the user already has, rather than blocking every mutating
   surface) — do not assume shell access is otherwise sandboxed against file
   writes.
+- **Nested MCP trust roots are developer-owned.** Dynamic registrations cannot
+  override a name already provisioned in `config.MCP_SERVERS`. When the public
+  ENDMEMEX repository is installed as a sibling, Hands provisions
+  `endeavor-agents` with the same Python interpreter that runs Hands. Only the
+  exact `endeavor_agent_start` call with `target=codex`, exact trusted entrypoint,
+  and exact trusted cwd may skip the *outer* Hands sandbox so managed Codex can
+  apply its own sandbox without macOS nested-sandbox failure. Tool discovery,
+  status/cancel, non-Codex starts, and every other stdio MCP remain sandboxed.
 
 None of the above is a guarantee that this server can safely execute
 arbitrary instructions from an untrusted or compromised MCP client — these
@@ -129,6 +137,14 @@ shell, รัน Python, อ่าน/เขียน/แก้ไฟล์, แ
   ยอมรับไว้แล้ว (เลือก friction แคบเฉพาะ 2 tool ที่เสี่ยงทำลายไฟล์เดิม
   มากที่สุด แทนที่จะบล็อกทุกช่องทางที่แก้ไขได้) — อย่าสมมติว่า shell
   access ถูก sandbox กันการเขียนไฟล์ไว้ด้วยเช่นกัน
+- **Nested MCP trust root เป็นของ developer** dynamic registration ไม่สามารถ
+  ทับชื่อที่ provision ไว้ใน `config.MCP_SERVERS` ได้ หากติดตั้ง public
+  ENDMEMEX เป็น sibling Hands จะ provision `endeavor-agents` ด้วย Python
+  interpreter ตัวเดียวกับที่รัน Hands และอนุญาตให้ข้าม *outer* Hands sandbox
+  ได้เฉพาะ `endeavor_agent_start` ที่ `target=codex` และตรง entrypoint/cwd ที่
+  trust ไว้เท่านั้น เพื่อให้ managed Codex ใช้ sandbox ของตัวเองได้โดยไม่ชน
+  macOS nested-sandbox ส่วน discovery, status/cancel, non-Codex start และ stdio
+  MCP อื่นทั้งหมดยังคงอยู่ใน Hands sandbox
 
 ไม่มีข้อใดข้างต้นที่รับประกันว่า server นี้จะรันคำสั่งใดๆ จาก MCP client
 ที่ไม่น่าเชื่อถือหรือถูกโจมตีแล้วได้อย่างปลอดภัย — ทั้งหมดนี้คือ

@@ -89,6 +89,45 @@ class MCPClientTests(unittest.TestCase):
         self.assertTrue(test_backend.prepared_argv)
         self.assertFalse(any("sandbox-exec" in arg for call in test_backend.prepared_argv for arg in call))
 
+    def test_developer_server_wins_dynamic_collision_and_cannot_be_overridden(self) -> None:
+        registry = self.work_dir / "tool_mcp" / "servers.json"
+        registry.parent.mkdir(parents=True, exist_ok=True)
+        developer_cfg = {
+            "transport": "stdio",
+            "command": sys.executable,
+            "args": [str(self.workspace / "developer.py")],
+            "cwd": str(self.workspace),
+        }
+        registry.write_text(json.dumps({
+            "reserved-test": {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": [str(self.workspace / "dynamic.py")],
+                "cwd": str(self.workspace),
+            }
+        }), encoding="utf-8")
+        old_servers = dict(mcp_client.MCP_SERVERS)
+        try:
+            mcp_client.MCP_SERVERS["reserved-test"] = developer_cfg
+            self.assertEqual(mcp_client._all_servers()["reserved-test"], developer_cfg)
+            rejected = mcp_client.mcp_add_server.func(
+                name="reserved-test",
+                command=sys.executable,
+                args_json="[]",
+                cwd=str(self.workspace),
+            )
+            self.assertIn("developer-provisioned", rejected)
+        finally:
+            mcp_client.MCP_SERVERS.clear()
+            mcp_client.MCP_SERVERS.update(old_servers)
+
+    @unittest.skipUnless("endeavor-agents" in mcp_client.MCP_SERVERS, "public ENDMEMEX sibling not installed")
+    def test_configured_endeavor_agents_uses_hands_interpreter(self) -> None:
+        cfg = mcp_client.MCP_SERVERS["endeavor-agents"]
+        self.assertEqual(os.path.realpath(cfg["command"]), os.path.realpath(sys.executable))
+        self.assertEqual(Path(cfg["args"][0]).resolve(), mcp_client._TRUSTED_AGENT_ENTRY)
+        self.assertEqual(Path(cfg["cwd"]).resolve(), mcp_client._TRUSTED_AGENT_CWD)
+
     def test_all_server_calls_use_shared_30k_cap(self) -> None:
         old_cap = mcp_client.MCP_MAX_CHARS
         mcp_client.MCP_MAX_CHARS = 30_000
@@ -187,6 +226,88 @@ class MCPClientTests(unittest.TestCase):
         self.assertEqual(
             mcp_client._trusted_server_unlink_paths("endeavor-rag-max", wrong_entry), ()
         )
+
+    def test_trusted_endeavor_agents_bypasses_only_outer_stdio_sandbox_for_codex_start(self) -> None:
+        agent_dir = self.workspace / "ENDMEMEX"
+        agent_dir.mkdir()
+        entry = agent_dir / "agent_mcp_server.py"
+        entry.write_text(
+            "import os\n"
+            "from mcp.server.fastmcp import FastMCP\n"
+            "mcp = FastMCP('endeavor-agents-test')\n"
+            "@mcp.tool()\n"
+            "def run_dir() -> str:\n"
+            "    return os.environ.get('ENDMEMEX_AGENT_RUNS_DIR', '')\n"
+            "if __name__ == '__main__':\n"
+            "    mcp.run()\n",
+            encoding="utf-8",
+        )
+        cfg = {
+            "transport": "stdio",
+            "command": sys.executable,
+            "args": [str(entry)],
+            "cwd": str(self.workspace),
+        }
+
+        old_cwd = mcp_client._TRUSTED_AGENT_CWD
+        old_entry = mcp_client._TRUSTED_AGENT_ENTRY
+        old_runs = mcp_client._TRUSTED_AGENT_RUNS_DIR
+        old_backend = mcp_client._SANDBOX_BACKEND
+        backend = DirectExecTestBackend()
+        mcp_client._TRUSTED_AGENT_CWD = self.workspace.resolve()
+        mcp_client._TRUSTED_AGENT_ENTRY = entry.resolve()
+        mcp_client._TRUSTED_AGENT_RUNS_DIR = str(self.workspace / "runs")
+        mcp_client._SANDBOX_BACKEND = backend
+        try:
+            stdio_env = mcp_client._trusted_agent_stdio_env("endeavor-agents", cfg)
+            self.assertEqual(
+                stdio_env,
+                {"ENDMEMEX_AGENT_RUNS_DIR": str(self.workspace / "runs")},
+            )
+            self.assertTrue(mcp_client._trusted_codex_start_direct(
+                "endeavor_agent_start", {"target": "codex"}, stdio_env
+            ))
+            called = asyncio.run(
+                mcp_client._call_tool_async(
+                    cfg,
+                    "run_dir",
+                    {},
+                    stdio_env=stdio_env,
+                    bypass_outer_sandbox=True,
+                )
+            )
+            self.assertEqual(called, str(self.workspace / "runs"))
+            self.assertEqual(backend.prepared_argv, [])
+
+            sandboxed_called = asyncio.run(
+                mcp_client._call_tool_async(
+                    cfg,
+                    "run_dir",
+                    {},
+                    stdio_env=stdio_env,
+                    bypass_outer_sandbox=False,
+                )
+            )
+            self.assertEqual(sandboxed_called, str(self.workspace / "runs"))
+            self.assertTrue(backend.prepared_argv)
+
+            self.assertFalse(mcp_client._trusted_codex_start_direct(
+                "endeavor_agent_status", {"run_id": "x"}, stdio_env
+            ))
+            self.assertFalse(mcp_client._trusted_codex_start_direct(
+                "endeavor_agent_start", {"target": "claude"}, stdio_env
+            ))
+            self.assertIsNone(mcp_client._trusted_agent_stdio_env("other", cfg))
+            wrong_entry = dict(cfg)
+            wrong_entry["args"] = [str(agent_dir / "other.py")]
+            self.assertIsNone(
+                mcp_client._trusted_agent_stdio_env("endeavor-agents", wrong_entry)
+            )
+        finally:
+            mcp_client._TRUSTED_AGENT_CWD = old_cwd
+            mcp_client._TRUSTED_AGENT_ENTRY = old_entry
+            mcp_client._TRUSTED_AGENT_RUNS_DIR = old_runs
+            mcp_client._SANDBOX_BACKEND = old_backend
 
     def test_stdio_rejects_relative_command_and_cwd_outside_workspace(self) -> None:
         with self.assertRaisesRegex(ValueError, "absolute executable path"):

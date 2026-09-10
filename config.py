@@ -7,9 +7,11 @@ WORKSPACE; READ_FILE_*; MCP_*; LOG_DIR/LOG_MAX_ENTRIES.
 """
 from __future__ import annotations
 import os
+import sys
 
 # ── Workspace ─────────────────────────────────────────────────────────────
-WORKSPACE = os.getenv("V2_WORKSPACE", os.path.join(os.path.dirname(os.path.abspath(__file__)), "workspace"))
+_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+WORKSPACE = os.getenv("V2_WORKSPACE", os.path.join(_PROJECT_ROOT, "workspace"))
 os.makedirs(WORKSPACE, exist_ok=True)
 
 # ── read_file limits ──────────────────────────────────────────────────────
@@ -26,7 +28,19 @@ READ_FILE_AUDIO_VIDEO_MAX_DURATION_SEC = int(os.getenv("V2_READ_FILE_AUDIO_VIDEO
 # Example (not enabled):
 #   MCP_SERVERS = {"worldmonitor": {"url": "https://worldmonitor.app/mcp",
 #                                    "headers": {"X-WorldMonitor-Key": os.getenv("WORLDMONITOR_API_KEY", "")}}}
+# If the public ENDMEMEX repository is installed as a sibling, expose its managed
+# agent MCP as a developer-owned trust root. The child cwd stays inside Hands'
+# approved workspace; agent_mcp_server.py resolves its own repository paths.
+_PUBLIC_ROOT = os.path.dirname(_PROJECT_ROOT)
+_AGENT_MCP_ENTRY = os.path.join(_PUBLIC_ROOT, "ENDMEMEX", "agent_mcp_server.py")
 MCP_SERVERS: dict[str, dict] = {}
+if os.path.isfile(_AGENT_MCP_ENTRY):
+    MCP_SERVERS["endeavor-agents"] = {
+        "transport": "stdio",
+        "command": sys.executable,
+        "args": [_AGENT_MCP_ENTRY],
+        "cwd": WORKSPACE,
+    }
 MCP_MAX_CHARS = min(max(int(os.getenv("V2_MCP_MAX_CHARS", "30000")), 1), 30_000)
 MCP_TIMEOUT = int(os.getenv("V2_MCP_TIMEOUT", "60"))  # seconds per list_tools/call_tool round trip
 

@@ -85,7 +85,7 @@ full detail behind each one.
 | `write_file` | Create a new file, or replace one with `overwrite=true` | Outside the workspace, an existing file is never replaced in place (goes to a `name.edited.ext` copy instead); replacing an existing file needs the same permission gate as `edit` |
 | `edit` | Make a targeted change to an existing file | **Needs the user's explicit one-time permission per top-level workspace folder, each session** (`[permission_required]` + a one-time code the model must relay to you) |
 | `computer` | See/click/type/scroll/drag, open apps and URLs | Requires macOS Accessibility permission; refuses password/secure-text fields and delete/remove-looking actions |
-| `mcp_list_tools`, `mcp_call_tool`, `mcp_add_server`, `mcp_remove_server` | Bridge to another Streamable HTTP or local stdio MCP server you configure | Dynamic registrations live under `Endeavor_Hands/work/tool_mcp/`; stdio servers use direct argv, no shell, and Hands' sandbox |
+| `mcp_list_tools`, `mcp_call_tool`, `mcp_add_server`, `mcp_remove_server` | Bridge to another Streamable HTTP or local stdio MCP server you configure | Dynamic registrations live under `Endeavor_Hands/work/tool_mcp/`; stdio uses direct argv/no shell and Hands' sandbox. If a sibling public `ENDMEMEX/agent_mcp_server.py` is installed, `endeavor-agents` is developer-provisioned with Hands' own interpreter; only exact `endeavor_agent_start(target=codex)` skips the outer Hands sandbox, and dynamic registration cannot override that trust root |
 
 Activity is shown live on stderr and persisted to `logs/agent_activity.jsonl`.
 MCP protocol messages use stdout exclusively, so do not add normal `print()`
@@ -370,7 +370,7 @@ Server เปิด MCP tool 12 ตัว ทุกตัวที่แก้�
 | `write_file` | สร้างไฟล์ใหม่ หรือแทนที่ทั้งไฟล์ด้วย `overwrite=true` | นอก workspace ไฟล์เดิมจะไม่ถูกแทนที่ตรงๆ (ไปแก้ที่สำเนา `name.edited.ext` แทน); การแทนที่ไฟล์เดิมต้องผ่าน permission gate เดียวกับ `edit` |
 | `edit` | แก้ไฟล์เดิมเฉพาะจุด | **ต้องได้รับอนุญาตจากผู้ใช้ครั้งเดียวต่อโฟลเดอร์ระดับบนสุด ในแต่ละ session** (`[permission_required]` พร้อมรหัสครั้งเดียวที่โมเดลต้องส่งมาให้คุณยืนยัน) |
 | `computer` | ดู/คลิก/พิมพ์/scroll/ลาก, เปิดแอปและ URL | ต้องมีสิทธิ์ macOS Accessibility; ปฏิเสธช่องรหัสผ่านและ action ที่ดูเหมือนลบ/ทำลาย |
-| `mcp_list_tools`, `mcp_call_tool`, `mcp_add_server`, `mcp_remove_server` | เชื่อมต่อไปยัง MCP server อื่นผ่าน Streamable HTTP หรือ local stdio | dynamic registration อยู่ใต้ `Endeavor_Hands/work/tool_mcp/`; stdio ใช้ argv โดยตรง ไม่ผ่าน shell และอยู่ใน sandbox ของ Hands |
+| `mcp_list_tools`, `mcp_call_tool`, `mcp_add_server`, `mcp_remove_server` | เชื่อมต่อไปยัง MCP server อื่นผ่าน Streamable HTTP หรือ local stdio | dynamic registration อยู่ใต้ `Endeavor_Hands/work/tool_mcp/`; stdio ใช้ argv โดยตรง ไม่ผ่าน shell และอยู่ใน sandbox ของ Hands หากติดตั้ง public `ENDMEMEX/agent_mcp_server.py` เป็น sibling จะ provision `endeavor-agents` ด้วย interpreter เดียวกับ Hands; เฉพาะ `endeavor_agent_start(target=codex)` ที่ตรง trust root เท่านั้นจึงข้าม outer Hands sandbox ได้ และ dynamic registration ทับชื่อ trust root นี้ไม่ได้ |
 
 กิจกรรมแสดงสดทาง stderr และบันทึกถาวรที่ `logs/agent_activity.jsonl` —
 ข้อความ MCP protocol ใช้ stdout เท่านั้น ห้ามเพิ่ม `print()` ธรรมดาในตัว

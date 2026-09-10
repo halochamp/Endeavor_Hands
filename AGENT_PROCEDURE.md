@@ -113,7 +113,8 @@ For `mcp_list_tools`, `mcp_call_tool`, `mcp_add_server`, and `mcp_remove_server`
 
 - dynamic registrations must remain scoped to the intended registry/workspace;
 - local stdio servers use direct argv, never a shell wrapper;
-- stdio child processes remain under Hands' sandbox;
+- stdio child processes remain under Hands' sandbox except the exact developer-provisioned `endeavor-agents.endeavor_agent_start` call with `target=codex`, which may skip only the outer Hands sandbox so managed Codex can apply its own sandbox;
+- developer-provisioned MCP names are trust roots and must win over dynamic registrations; dynamic registration must not replace them;
 - do not turn registration fields into arbitrary shell execution;
 - do not leak configured headers/API keys in logs or responses;
 - preserve bounded output/error handling;

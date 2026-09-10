@@ -36,7 +36,7 @@ Before editing:
 - `computer` works from a fresh observation, refuses password/secure fields and destructive-looking actions, and verifies mutations.
 - Raw coordinates are not a substitute for deterministic element targeting.
 - Git mutation uses the guarded Git tool, not shell Git mutation.
-- Nested stdio MCP uses direct argv/no shell and Hands' sandbox.
+- Nested stdio MCP uses direct argv/no shell and Hands' sandbox. The only outer-sandbox bypass is the exact developer-provisioned `endeavor-agents.endeavor_agent_start` call with `target=codex`; dynamic registrations cannot replace developer trust roots.
 
 ## Model-facing tool contract
 

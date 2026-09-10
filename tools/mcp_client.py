@@ -2,9 +2,14 @@
 
 Two registries are merged by name: config.MCP_SERVERS (developer-provisioned)
 and a dynamic registry under Endeavor Hands' project-local work/ directory.
-Dynamic entries win on name collisions. HTTP servers use the official MCP SDK's
+Developer-provisioned entries win on name collisions so dynamic registrations
+cannot replace a trust-root server. HTTP servers use the official MCP SDK's
 streamable HTTP client. Local stdio servers are spawned without a shell and run
-under the same guarded sandbox profile as Hands' shell tools.
+under the same guarded sandbox profile as Hands' shell tools. The sole exception
+is an exact developer-trusted `endeavor-agents.endeavor_agent_start` request for
+target=codex: only that start skips the outer Hands subprocess sandbox so Codex
+can apply its own sandbox without macOS nested-sandbox failure. Discovery,
+status/cancel, non-Codex starts, and every other stdio server remain sandboxed.
 """
 from __future__ import annotations
 
@@ -12,6 +17,7 @@ import asyncio
 import fcntl
 import json
 import os
+import stat
 import sys
 import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
@@ -30,6 +36,9 @@ _T = TypeVar("_T")
 _SANDBOX_BACKEND = RealSandboxBackend()
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 _WORK_DIR = _PROJECT_ROOT / "work"
+_TRUSTED_AGENT_CWD = Path(WORKSPACE).resolve()
+_TRUSTED_AGENT_ENTRY = (_PROJECT_ROOT.parent / "ENDMEMEX" / "agent_mcp_server.py").resolve()
+_TRUSTED_AGENT_RUNS_DIR = "/private/tmp/endmemex-agent-runs"
 
 
 def _inside(path: str, root: str) -> bool:
@@ -68,7 +77,7 @@ def _load_dynamic_servers(*, strict: bool = False) -> dict:
 
 
 def _all_servers() -> dict:
-    return {**MCP_SERVERS, **_load_dynamic_servers()}
+    return {**_load_dynamic_servers(), **MCP_SERVERS}
 
 
 def _save_dynamic_servers(servers: dict) -> None:
@@ -187,6 +196,49 @@ def _trusted_server_unlink_paths(server: str, cfg: dict) -> tuple[str, ...]:
     return (str(chroma_dir),)
 
 
+def _trusted_agent_stdio_env(server: str, cfg: dict) -> dict[str, str] | None:
+    """Return the shared run-dir env only for the exact managed agent server."""
+    if server != "endeavor-agents":
+        return None
+    try:
+        normalised = _normalise_server_config(cfg)
+    except (OSError, ValueError):
+        return None
+    if normalised.get("transport") != "stdio":
+        return None
+    if Path(normalised["cwd"]).resolve() != _TRUSTED_AGENT_CWD:
+        return None
+    if os.path.realpath(normalised["command"]) != os.path.realpath(sys.executable):
+        return None
+    args = normalised.get("args") or []
+    if len(args) != 1:
+        return None
+    raw_entry = Path(os.path.abspath(os.path.expanduser(args[0])))
+    try:
+        info = os.lstat(raw_entry)
+    except OSError:
+        return None
+    if stat.S_ISLNK(info.st_mode) or not stat.S_ISREG(info.st_mode):
+        return None
+    if Path(os.path.realpath(raw_entry)) != _TRUSTED_AGENT_ENTRY:
+        return None
+    return {"ENDMEMEX_AGENT_RUNS_DIR": _TRUSTED_AGENT_RUNS_DIR}
+
+
+def _trusted_codex_start_direct(
+    tool_name: str,
+    arguments: dict,
+    stdio_env: dict[str, str] | None,
+) -> bool:
+    """Only managed Codex start skips the outer Hands subprocess sandbox."""
+    return (
+        stdio_env is not None
+        and tool_name == "endeavor_agent_start"
+        and isinstance(arguments, dict)
+        and arguments.get("target") == "codex"
+    )
+
+
 def _normalise_server_config(cfg: dict) -> dict:
     if not isinstance(cfg, dict):
         raise ValueError("MCP server configuration must be an object")
@@ -256,7 +308,13 @@ def _run_async(factory: Callable[[], Coroutine[object, object, _T]]) -> _T:
 
 
 @asynccontextmanager
-async def _open_session(cfg: dict, *, extra_unlink_paths: tuple[str, ...] = ()):
+async def _open_session(
+    cfg: dict,
+    *,
+    stdio_env: dict[str, str] | None = None,
+    bypass_outer_sandbox: bool = False,
+    extra_unlink_paths: tuple[str, ...] = (),
+):
     from mcp import ClientSession
 
     cfg = _normalise_server_config(cfg)
@@ -271,6 +329,19 @@ async def _open_session(cfg: dict, *, extra_unlink_paths: tuple[str, ...] = ()):
 
     from mcp.client.stdio import StdioServerParameters, stdio_client
 
+    if bypass_outer_sandbox:
+        params = StdioServerParameters(
+            command=cfg["command"],
+            args=list(cfg["args"]),
+            cwd=cfg["cwd"],
+            env=stdio_env,
+        )
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+        return
+
     _WORK_DIR.mkdir(parents=True, exist_ok=True)
     profile = build_sandbox_profile(WORKSPACE, extra_unlink_paths=extra_unlink_paths)
     with _SANDBOX_BACKEND.prepare(
@@ -282,6 +353,7 @@ async def _open_session(cfg: dict, *, extra_unlink_paths: tuple[str, ...] = ()):
             command=invocation.argv[0],
             args=list(invocation.argv[1:]),
             cwd=cfg["cwd"],
+            env=stdio_env,
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
@@ -289,8 +361,15 @@ async def _open_session(cfg: dict, *, extra_unlink_paths: tuple[str, ...] = ()):
                 yield session
 
 
-async def _list_tools_async(cfg: dict, *, extra_unlink_paths: tuple[str, ...] = ()) -> str:
-    async with _open_session(cfg, extra_unlink_paths=extra_unlink_paths) as session:
+async def _list_tools_async(
+    cfg: dict,
+    *,
+    stdio_env: dict[str, str] | None = None,
+    extra_unlink_paths: tuple[str, ...] = (),
+) -> str:
+    async with _open_session(
+        cfg, stdio_env=stdio_env, extra_unlink_paths=extra_unlink_paths
+    ) as session:
         result = await session.list_tools()
     tools = list(result.tools)
     if not tools:
@@ -325,9 +404,20 @@ async def _list_tools_async(cfg: dict, *, extra_unlink_paths: tuple[str, ...] = 
 
 
 async def _call_tool_async(
-    cfg: dict, tool_name: str, arguments: dict, *, extra_unlink_paths: tuple[str, ...] = ()
+    cfg: dict,
+    tool_name: str,
+    arguments: dict,
+    *,
+    stdio_env: dict[str, str] | None = None,
+    bypass_outer_sandbox: bool = False,
+    extra_unlink_paths: tuple[str, ...] = (),
 ) -> str:
-    async with _open_session(cfg, extra_unlink_paths=extra_unlink_paths) as session:
+    async with _open_session(
+        cfg,
+        stdio_env=stdio_env,
+        bypass_outer_sandbox=bypass_outer_sandbox,
+        extra_unlink_paths=extra_unlink_paths,
+    ) as session:
         result = await session.call_tool(tool_name, arguments)
     parts = [c.text for c in result.content if getattr(c, "type", None) == "text"]
     body = "\n".join(parts) if parts else "(tool returned no text content)"
@@ -350,7 +440,12 @@ def mcp_list_tools(server: str) -> str:
         )
     try:
         extra_unlink_paths = _trusted_server_unlink_paths(server, cfg)
-        listed = _run_async(lambda: _list_tools_async(cfg, extra_unlink_paths=extra_unlink_paths))
+        stdio_env = _trusted_agent_stdio_env(server, cfg)
+        listed = _run_async(
+            lambda: _list_tools_async(
+                cfg, stdio_env=stdio_env, extra_unlink_paths=extra_unlink_paths
+            )
+        )
         return _cap_tool_lines(listed.splitlines())
     except Exception as exc:
         return append_diagnostic(
@@ -382,9 +477,16 @@ def mcp_call_tool(server: str, tool_name: str, arguments_json: str = "{}") -> st
         )
     try:
         extra_unlink_paths = _trusted_server_unlink_paths(server, cfg)
+        stdio_env = _trusted_agent_stdio_env(server, cfg)
+        bypass_outer_sandbox = _trusted_codex_start_direct(tool_name, arguments, stdio_env)
         return _cap(
             _run_async(lambda: _call_tool_async(
-                cfg, tool_name, arguments, extra_unlink_paths=extra_unlink_paths
+                cfg,
+                tool_name,
+                arguments,
+                stdio_env=stdio_env,
+                bypass_outer_sandbox=bypass_outer_sandbox,
+                extra_unlink_paths=extra_unlink_paths,
             )),
             max_chars=_call_output_cap(server),
         )
@@ -409,11 +511,17 @@ def mcp_add_server(
     HTTP: provide url and optional headers_json.
     stdio: provide an absolute executable command, optional args_json array, and
     optional cwd inside the approved workspace. Exactly one of url or command is
-    required. stdio is spawned directly without a shell and inside Hands' sandbox.
+    required. stdio is spawned directly without a shell and inside Hands' sandbox;
+    only an exact developer-trusted endeavor-agents Codex start skips the outer sandbox.
     """
     name = (name or "").strip()
     if not name:
         return "[error] name is required"
+    if name in MCP_SERVERS:
+        return (
+            f"[error] '{name}' is developer-provisioned and cannot be overridden "
+            "by the dynamic MCP registry"
+        )
     url = (url or "").strip()
     command = (command or "").strip()
     if bool(url) == bool(command):
